@@ -3,3 +3,5 @@ pydantic
 numpy
 xgboost
 uvicorn
+scikit-learn
+joblib
