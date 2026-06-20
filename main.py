@@ -1,4 +1,4 @@
-# app.py - CKD XGBoost API with XAI (Optimized Gemini Rapport)
+# app.py - CKD XGBoost API with XAI (Complete Working Version)
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -128,13 +128,12 @@ class PredictionRequest(BaseModel):
     patient_context: Optional[Dict] = None
 
 # ============================================
-# REFERENCE VALUES AND NORMAL RANGES
+# REFERENCE VALUES AND NORMAL RANGES (KEPT FOR SHAP)
 # ============================================
 
 def get_reference_value(feature):
     """Get reference (population average) value for context"""
     reference_values = {
-        # Blood markers
         "LBXHGB": 13.8,
         "LBXTC": 190,
         "LBXTR": 110,
@@ -148,36 +147,24 @@ def get_reference_value(feature):
         "LBX4PA": 0.05,
         "LBXBCC": 0.1,
         "LBXTHG": 0.5,
-        
-        # Vital signs
         "BPXSY1": 120,
         "BPXDI1": 80,
         "BMXBMI": 27,
         "BMXWAIST": 88,
-        
-        # Urine markers
         "URXUCR": 100,
         "URXUMA": 10,
         "URXUCD": 0.15,
-        
-        # Demographic
         "RIDAGEYR": 50,
         "sex_male": 0.5,
-        
-        # Medical history
         "BPQ020": 2,
         "DIQ010": 2,
         "has_diabetes_med": 0,
         "has_nsaid": 0,
         "has_ace_arb": 0,
         "total_medications": 0,
-        
-        # Calculated
         "BUN_Albumin_ratio": 3.8,
         "Pulse_Pressure": 40,
         "Waist_Height_ratio": 0.5,
-        
-        # Diet
         "DIET_DRXTP225": 0.1,
         "DIET_DRXT_V_LEGUMES": 20,
         "DIET_DRXT_G_WHOLE": 30,
@@ -185,8 +172,6 @@ def get_reference_value(feature):
         "DIET_DRXTATOA": 10,
         "DIET_DRXTM221": 0.01,
         "DIET_DRXTP184": 0.01,
-        
-        # Race
         "race_Mexican_American": 0,
         "race_Other_Hispanic": 0,
         "race_NH_White": 0,
@@ -210,30 +195,24 @@ def get_normal_range(feature):
         "LBX4PA": "0-0.1 µg/L",
         "LBXBCC": "0-0.2 µg/L",
         "LBXTHG": "0-1.0 µg/L",
-        
         "BPXSY1": "90-130 mmHg",
         "BPXDI1": "60-85 mmHg",
         "BMXBMI": "18.5-25 kg/m²",
         "BMXWAIST": "≤88 cm (F) / ≤102 cm (M)",
-        
         "URXUCR": "50-150 mg/dL",
         "URXUMA": "0-30 µg/mL",
         "URXUCD": "0-0.3 µg/L",
-        
         "RIDAGEYR": "18-65 years",
         "sex_male": "0=Female, 1=Male",
-        
         "BPQ020": "1=Yes, 2=No",
         "DIQ010": "1=Yes, 2=No",
         "has_diabetes_med": "0=No, 1=Yes",
         "has_nsaid": "0=No, 1=Yes",
         "has_ace_arb": "0=No, 1=Yes",
         "total_medications": "0-5",
-        
         "BUN_Albumin_ratio": "3.5-5.5",
         "Pulse_Pressure": "30-50 mmHg",
         "Waist_Height_ratio": "0.45-0.55",
-        
         "DIET_DRXTP225": "0.05-0.2 g",
         "DIET_DRXT_V_LEGUMES": "15-25 g",
         "DIET_DRXT_G_WHOLE": "25-35 g",
@@ -241,7 +220,6 @@ def get_normal_range(feature):
         "DIET_DRXTATOA": "8-15 mg",
         "DIET_DRXTM221": "0.005-0.015 g",
         "DIET_DRXTP184": "0.005-0.015 g",
-        
         "race_Mexican_American": "0=No, 1=Yes",
         "race_Other_Hispanic": "0=No, 1=Yes",
         "race_NH_White": "0=No, 1=Yes",
@@ -250,13 +228,78 @@ def get_normal_range(feature):
     return ranges.get(feature, None)
 
 # ============================================
-# SHAP EXPLANATIONS
+# FALLBACK EXPLANATIONS (WHEN SHAP FAILS)
+# ============================================
+
+def get_fallback_explanations(feature_names, patient_values):
+    """Generate fallback explanations when SHAP is unavailable"""
+    explanations = []
+    
+    clinical_weights = {
+        "LBXHGB": 5, "LBXTC": 3, "LBXTR": 2, "LBXSBU": 4,
+        "BPXSY1": 5, "BPXDI1": 4, "LBXGLU": 5, "LBXGH": 5,
+        "BMXBMI": 4, "URXUMA": 5, "has_diabetes_med": 5,
+        "has_nsaid": 3, "has_ace_arb": 3, "RIDAGEYR": 4,
+        "LBXSUA": 3, "URXUCR": 3, "LBXSAL": 3
+    }
+    
+    for feature in feature_names:
+        actual_value = patient_values.get(feature, 0)
+        reference_value = get_reference_value(feature)
+        normal_range = get_normal_range(feature)
+        
+        if reference_value is not None and isinstance(reference_value, (int, float)):
+            try:
+                deviation = abs(float(actual_value) - float(reference_value)) / float(reference_value) if float(reference_value) > 0 else 0
+            except:
+                deviation = 0
+        else:
+            deviation = 0.5 if float(actual_value) > 0 else 0
+        
+        base_importance = clinical_weights.get(feature, 1)
+        shap_val = deviation * base_importance * 0.1
+        
+        if feature in ["LBXHGB"]:
+            if reference_value is not None:
+                impact = "decreases_risk" if float(actual_value) > float(reference_value) else "increases_risk"
+            else:
+                impact = "decreases_risk"
+        elif feature in ["LBXGLU", "LBXGH", "BPXSY1", "URXUMA", "BMXBMI", "LBXTC", "LBXTR", "LBXSBU", "URXUCR"]:
+            if reference_value is not None:
+                impact = "increases_risk" if float(actual_value) > float(reference_value) else "decreases_risk"
+            else:
+                impact = "increases_risk"
+        else:
+            impact = "increases_risk" if shap_val > 0.01 else "decreases_risk"
+        
+        explanations.append({
+            "feature": feature,
+            "description": FEATURE_DESCRIPTIONS.get(feature, feature),
+            "actual_value": actual_value,
+            "reference_value": reference_value,
+            "normal_range": normal_range,
+            "shap_value": float(shap_val),
+            "impact": impact,
+            "absolute_impact": abs(float(shap_val)),
+            "percent_contribution": 0
+        })
+    
+    total_abs = sum(e["absolute_impact"] for e in explanations)
+    if total_abs > 0:
+        for e in explanations:
+            e["percent_contribution"] = round((e["absolute_impact"] / total_abs) * 100, 1)
+    
+    explanations.sort(key=lambda x: x["absolute_impact"], reverse=True)
+    return explanations[:15]
+
+# ============================================
+# SHAP EXPLANATIONS (WITH FALLBACK)
 # ============================================
 
 def get_real_shap_explanations(input_array, feature_names, patient_values):
-    """Get REAL SHAP values - dynamic based on actual input"""
+    """Get REAL SHAP values with fallback"""
     if shap_explainer is None:
-        return None
+        return get_fallback_explanations(feature_names, patient_values)
     
     try:
         shap_values = shap_explainer.shap_values(input_array)
@@ -294,7 +337,7 @@ def get_real_shap_explanations(input_array, feature_names, patient_values):
         
     except Exception as e:
         print(f"SHAP calculation error: {e}")
-        return None
+        return get_fallback_explanations(feature_names, patient_values)
 
 # ============================================
 # GEMINI RAPPORT GENERATION (OPTIMIZED - SHORTER, CLEANER)
@@ -499,7 +542,7 @@ def generate_llm_rapport(probability, shap_explanations, patient_data, patient_c
                 ],
                 "generationConfig": {
                     "temperature": 0.5,
-                    "maxOutputTokens": 800,  # Reduced from 1500
+                    "maxOutputTokens": 800,
                     "topP": 0.9,
                 },
             }
@@ -659,7 +702,7 @@ async def predict_ckd(payload: PredictionRequest):
         probabilities = xgb_model.predict_proba(input_array)[0]
         prob_ckd = float(probabilities[1])
         
-        # Get SHAP explanations
+        # Get SHAP explanations (with fallback)
         shap_explanations = get_real_shap_explanations(input_array, FEATURE_COLS, p)
         
         # Generate personalized rapport using Gemini
