@@ -1,4 +1,4 @@
-# app.py - CKD XGBoost API with XAI (Embedded SHAP Data) - WITH COMPLETE REFERENCE RANGES
+# app.py - CKD XGBoost API with XAI (Optimized Gemini Rapport)
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -11,23 +11,12 @@ import json
 import os
 import logging
 import requests
-import sys
 from io import StringIO
-import traceback
-
-# ============================================
-# DETAILED LOGGING SETUP
-# ============================================
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(sys.stdout)
-    ]
-)
-logger = logging.getLogger("nephroshield-api")
 
 app = FastAPI(title="CKD XGBoost API with XAI")
+
+logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
+logger = logging.getLogger("nephroshield-api")
 
 app.add_middleware(
     CORSMiddleware,
@@ -49,9 +38,9 @@ GEMINI_API_BASE_URL = os.environ.get(
 ).rstrip("/")
 
 if GEMINI_API_KEY:
-    logger.info("✅ Gemini REST generation configured with model %s", GEMINI_MODEL)
+    logger.info("Gemini REST generation configured with model %s", GEMINI_MODEL)
 else:
-    logger.warning("⚠️ GEMINI_API_KEY not set; Gemini rapport generation disabled")
+    logger.warning("GEMINI_API_KEY not set; Gemini rapport generation disabled")
 
 # ============================================
 # EMBEDDED SHAP BACKGROUND DATA (No CSV needed!)
@@ -67,24 +56,12 @@ SHAP_BACKGROUND_CSV = """has_nsaid,LBXHGB,LBXTC,LBXTR,has_diabetes_med,URXUCR,se
 # ============================================
 # LOAD YOUR EXISTING MODEL
 # ============================================
-logger.info("=" * 60)
-logger.info("🚀 STARTING API - LOADING MODELS")
-logger.info("=" * 60)
-
 try:
-    model_path = "models/xgb_trackD.pkl"
-    logger.info(f"📂 Loading model from: {model_path}")
-    
-    if not os.path.exists(model_path):
-        logger.error(f"❌ Model file not found at: {model_path}")
-        xgb_model = None
-    else:
-        with open(model_path, "rb") as f:
-            xgb_model = pickle.load(f)
-        logger.info(f"✅ XGBoost model loaded successfully")
-        
+    with open("models/xgb_trackD.pkl", "rb") as f:
+        xgb_model = pickle.load(f)
+    print("✅ XGBoost model loaded")
 except Exception as e:
-    logger.error(f"❌ Error loading XGBoost model: {e}")
+    print(f"❌ Error loading XGBoost model: {e}")
     xgb_model = None
 
 # ============================================
@@ -93,24 +70,19 @@ except Exception as e:
 shap_explainer = None
 
 try:
-    logger.info("📊 Loading SHAP background data...")
     background_data = pd.read_csv(StringIO(SHAP_BACKGROUND_CSV))
-    logger.info(f"✅ Background data loaded: {background_data.shape}")
+    print(f"✅ Background data loaded: {background_data.shape}")
     
     if xgb_model is not None:
-        logger.info("🔧 Creating SHAP TreeExplainer...")
         shap_explainer = shap.TreeExplainer(xgb_model, background_data)
-        logger.info("✅ Real SHAP explainer loaded successfully!")
+        print("✅ Real SHAP explainer loaded")
     else:
-        logger.warning("⚠️ Model not loaded, SHAP explainer not created")
-        
+        print("⚠️ Model not loaded, SHAP explainer not created")
 except Exception as e:
-    logger.error(f"❌ Error loading SHAP explainer: {e}")
+    print(f"❌ Error loading SHAP explainer: {e}")
+    import traceback
+    traceback.print_exc()
     shap_explainer = None
-
-logger.info("=" * 60)
-logger.info(f"🏁 Startup complete - Model: {xgb_model is not None}, SHAP: {shap_explainer is not None}")
-logger.info("=" * 60)
 
 # ============================================
 # FEATURES
@@ -138,38 +110,16 @@ FEATURE_DESCRIPTIONS = {
     "LBXSBU": "Blood urea nitrogen (BUN)",
     "BPQ020": "Hypertension history",
     "BUN_Albumin_ratio": "BUN to Albumin ratio",
-    "DIET_DRXTP225": "Total protein intake",
     "DIQ010": "Diabetes diagnosis",
     "URXUMA": "Urinary albumin",
     "LBXSUA": "Uric acid",
-    "LBXBPB": "Blood lead",
     "RIDAGEYR": "Age",
-    "LBXBCD": "Blood cadmium",
     "BMXBMI": "BMI",
-    "DIET_DRXT_V_LEGUMES": "Legume intake",
     "BPXSY1": "Systolic blood pressure",
-    "Waist_Height_ratio": "Waist-to-height ratio",
-    "DIET_DRXT_G_WHOLE": "Whole grain intake",
-    "LBX4PA": "Blood mercury",
-    "DIET_DRXT_PF_SOY": "Soy protein intake",
-    "LBXSAL": "Serum albumin",
-    "LBXBCC": "Blood cobalt",
-    "BMXWAIST": "Waist circumference",
-    "URXUCD": "Urinary cadmium",
-    "LBXTHG": "Blood thallium",
     "BPXDI1": "Diastolic blood pressure",
-    "DIET_DRXTATOA": "Vitamin E intake",
-    "DIET_DRXTM221": "Omega-3 intake",
-    "race_Mexican_American": "Mexican American race",
-    "race_Other_Hispanic": "Other Hispanic race",
-    "race_NH_White": "Non-Hispanic White race",
-    "race_NH_Black": "Non-Hispanic Black race",
-    "Pulse_Pressure": "Pulse pressure",
     "has_ace_arb": "ACE/ARB medication",
-    "DIET_DRXTP184": "Omega-6 intake",
     "LBXGLU": "Blood glucose",
     "LBXGH": "HbA1c",
-    "total_medications": "Total medications"
 }
 
 class PredictionRequest(BaseModel):
@@ -300,102 +250,21 @@ def get_normal_range(feature):
     return ranges.get(feature, None)
 
 # ============================================
-# FALLBACK EXPLANATIONS
-# ============================================
-
-def get_fallback_explanations(feature_names, patient_values):
-    """Generate fallback explanations when SHAP is unavailable"""
-    logger.info("🔄 Using FALLBACK explanations (SHAP not available)")
-    
-    explanations = []
-    
-    # Clinical importance weights
-    clinical_weights = {
-        "LBXHGB": 5, "LBXTC": 3, "LBXTR": 2, "LBXSBU": 4,
-        "BPXSY1": 5, "BPXDI1": 4, "LBXGLU": 5, "LBXGH": 5,
-        "BMXBMI": 4, "URXUMA": 5, "has_diabetes_med": 5,
-        "has_nsaid": 3, "has_ace_arb": 3, "RIDAGEYR": 4,
-        "LBXSUA": 3, "URXUCR": 3, "LBXSAL": 3
-    }
-    
-    for feature in feature_names:
-        actual_value = patient_values.get(feature, 0)
-        reference_value = get_reference_value(feature)
-        normal_range = get_normal_range(feature)
-        
-        # Calculate deviation from reference
-        if reference_value is not None and isinstance(reference_value, (int, float)):
-            try:
-                deviation = abs(float(actual_value) - float(reference_value)) / float(reference_value) if float(reference_value) > 0 else 0
-            except:
-                deviation = 0
-        else:
-            deviation = 0.5 if float(actual_value) > 0 else 0
-        
-        base_importance = clinical_weights.get(feature, 1)
-        shap_val = deviation * base_importance * 0.1
-        
-        # Determine impact
-        if feature in ["LBXHGB"]:
-            if reference_value is not None:
-                impact = "decreases_risk" if float(actual_value) > float(reference_value) else "increases_risk"
-            else:
-                impact = "decreases_risk"
-        elif feature in ["LBXGLU", "LBXGH", "BPXSY1", "URXUMA", "BMXBMI", "LBXTC", "LBXTR", "LBXSBU", "URXUCR"]:
-            if reference_value is not None:
-                impact = "increases_risk" if float(actual_value) > float(reference_value) else "decreases_risk"
-            else:
-                impact = "increases_risk"
-        else:
-            impact = "increases_risk" if shap_val > 0.01 else "decreases_risk"
-        
-        explanations.append({
-            "feature": feature,
-            "description": FEATURE_DESCRIPTIONS.get(feature, feature),
-            "actual_value": actual_value,
-            "reference_value": reference_value,
-            "normal_range": normal_range,
-            "shap_value": float(shap_val),
-            "impact": impact,
-            "absolute_impact": abs(float(shap_val)),
-            "percent_contribution": 0
-        })
-    
-    # Calculate percentages
-    total_abs = sum(e["absolute_impact"] for e in explanations)
-    if total_abs > 0:
-        for e in explanations:
-            e["percent_contribution"] = round((e["absolute_impact"] / total_abs) * 100, 1)
-    
-    explanations.sort(key=lambda x: x["absolute_impact"], reverse=True)
-    return explanations[:15]
-
-# ============================================
 # SHAP EXPLANATIONS
 # ============================================
 
 def get_real_shap_explanations(input_array, feature_names, patient_values):
-    """Get REAL SHAP values with fallback"""
-    logger.info("🔍 Getting SHAP explanations...")
-    logger.info(f"   - SHAP explainer available: {shap_explainer is not None}")
-    logger.info(f"   - Input array shape: {input_array.shape}")
-    
+    """Get REAL SHAP values - dynamic based on actual input"""
     if shap_explainer is None:
-        logger.warning("⚠️ SHAP explainer is None, using fallback")
-        return get_fallback_explanations(feature_names, patient_values)
+        return None
     
     try:
-        logger.info("📊 Calculating SHAP values...")
         shap_values = shap_explainer.shap_values(input_array)
-        logger.info(f"✅ SHAP values calculated, type: {type(shap_values)}")
         
         if isinstance(shap_values, list):
-            logger.info(f"   - SHAP is a list with {len(shap_values)} items")
             shap_values = shap_values[1] if len(shap_values) > 1 else shap_values[0]
-            logger.info(f"   - Using class 1 SHAP values")
         
         shap_values = shap_values.flatten()
-        logger.info(f"   - Flattened SHAP values length: {len(shap_values)}")
         
         explanations = []
         for i, (feature, shap_val) in enumerate(zip(feature_names, shap_values)):
@@ -421,19 +290,14 @@ def get_real_shap_explanations(input_array, feature_names, patient_values):
                 e["percent_contribution"] = round((e["absolute_impact"] / total_abs_impact) * 100, 1)
         
         explanations.sort(key=lambda x: x["absolute_impact"], reverse=True)
-        result = explanations[:15]
-        logger.info(f"✅ SHAP explanations generated: {len(result)} factors")
-        
-        return result
+        return explanations[:15]
         
     except Exception as e:
-        logger.error(f"❌ SHAP calculation error: {e}")
-        logger.error(traceback.format_exc())
-        logger.info("🔄 Falling back to fallback explanations")
-        return get_fallback_explanations(feature_names, patient_values)
+        print(f"SHAP calculation error: {e}")
+        return None
 
 # ============================================
-# GEMINI RAPPORT GENERATION
+# GEMINI RAPPORT GENERATION (OPTIMIZED - SHORTER, CLEANER)
 # ============================================
 
 def generate_abnormal_labs_summary(patient_data):
@@ -449,13 +313,7 @@ def generate_abnormal_labs_summary(patient_data):
         "BMXBMI": (18.5, 25, "kg/m²"),
         "LBXTC": (125, 200, "mg/dL"),
         "LBXTR": (50, 150, "mg/dL"),
-        "URXUMA": (0, 30, "µg/mL"),
-        "LBXSBU": (7, 20, "mg/dL"),
-        "LBXSAL": (3.5, 5.0, "g/dL"),
-        "LBXSUA": (3.5, 7.2, "mg/dL"),
-        "URXUCR": (50, 150, "mg/dL"),
-        "BMXWAIST": (0, 102, "cm"),
-        "RIDAGEYR": (18, 65, "years"),
+        "URXUMA": (0, 30, "µg/mL")
     }
     
     for key, (low, high, unit) in reference_ranges.items():
@@ -485,29 +343,29 @@ def generate_template_rapport(risk_score, top_risk_factors, top_protective_facto
     
     risk_section = ""
     if top_risk_factors:
-        risk_section = "\n\n**What's affecting your kidney health:**\n"
+        risk_section = "\n\nWhat's affecting your kidney health:\n"
         for factor in top_risk_factors[:3]:
-            risk_section += f"• {factor['factor']} (currently {factor['value']}) - contributing {factor['impact_percent']:.0f}% to your risk score\n"
+            risk_section += f"- {factor['factor']} (currently {factor['value']}) - contributing {factor['impact_percent']:.0f}% to your risk score\n"
     
     recommendations = []
     if any(f['factor'] == 'Blood pressure' for f in top_risk_factors):
-        recommendations.append("• 🫀 Work with your doctor to bring blood pressure below 130/80")
+        recommendations.append("- Work with your doctor to bring blood pressure below 130/80")
     if any(f['factor'] == 'HbA1c' for f in top_risk_factors):
-        recommendations.append("• 📊 Improve blood sugar control - aim for HbA1c below 7%")
+        recommendations.append("- Improve blood sugar control - aim for HbA1c below 7%")
     if any(f['factor'] == 'BMI' for f in top_risk_factors):
-        recommendations.append("• ⚖️ Consider a 5-10% weight reduction goal")
+        recommendations.append("- Consider a 5-10% weight reduction goal")
     if any(f['factor'] == 'Hemoglobin' for f in top_risk_factors):
-        recommendations.append("• 🩸 Discuss anemia management with your doctor")
+        recommendations.append("- Discuss anemia management with your doctor")
     
     if not recommendations:
         recommendations = [
-            "• 🩺 Schedule your annual kidney function check",
-            "• 💧 Stay well hydrated (6-8 glasses of water daily)",
-            "• 🧂 Limit sodium to less than 2300mg per day",
-            "• 🏃 Aim for 150 minutes of moderate exercise weekly"
+            "- Schedule your annual kidney function check",
+            "- Stay well hydrated (6-8 glasses of water daily)",
+            "- Limit sodium to less than 2300mg per day",
+            "- Aim for 150 minutes of moderate exercise weekly"
         ]
     
-    recs_text = "\n\n**Your Action Plan:**\n" + "\n".join(recommendations[:4])
+    recs_text = "\n\nYour Action Plan:\n" + "\n".join(recommendations[:4])
     full_text = primary + risk_section + recs_text + f"\n\n{empathy}\n\nWarmly,\nYour Kidney Health Team"
     
     return {
@@ -544,12 +402,13 @@ def extract_structured_from_llm(llm_text, risk_score, top_factors, provider="gem
     recommendations = []
     lines = llm_text.split('\n')
     for line in lines:
-        if any(word in line.lower() for word in ['recommend', 'should', 'consider', 'try', 'aim']):
-            if len(line.strip()) > 20:
+        clean_line = line.strip()
+        if any(word in clean_line.lower() for word in ['recommend', 'should', 'consider', 'try', 'aim', 'action']):
+            if len(clean_line) > 10 and not clean_line.startswith('```'):
                 recommendations.append({
-                    "action": line.strip()[:50],
-                    "detail": line.strip(),
-                    "priority": "high" if "urgent" in line.lower() or "immediately" in line.lower() else "medium"
+                    "action": clean_line[:50],
+                    "detail": clean_line,
+                    "priority": "high" if "urgent" in clean_line.lower() or "immediately" in clean_line.lower() else "medium"
                 })
     
     return {
@@ -572,7 +431,7 @@ def extract_structured_from_llm(llm_text, risk_score, top_factors, provider="gem
     }
 
 def generate_llm_rapport(probability, shap_explanations, patient_data, patient_context):
-    """Generate personalized rapport using Gemini"""
+    """Generate personalized rapport using Gemini - OPTIMIZED for shorter, cleaner output"""
     
     risk_score = probability * 100
     
@@ -595,41 +454,35 @@ def generate_llm_rapport(probability, shap_explanations, patient_data, patient_c
                     "impact_percent": exp["percent_contribution"]
                 })
     
-    # Build prompt for LLM
-    system_prompt = """You are Dr. Shield, an empathetic AI medical assistant specializing in kidney health. 
-    Generate a personalized, compassionate health report for a patient based on their CKD risk assessment.
-    Use warm, encouraging language. Avoid medical jargon. Provide specific, actionable advice.
-    The patient may be anxious - be reassuring while being honest about risks.
-    Format with clear sections using emojis for visual appeal."""
+    # Build prompt for LLM - OPTIMIZED for shorter, cleaner output
+    system_prompt = """You are a medical assistant. Create a short, professional health report for a patient.
+    Keep it concise (max 300 words). Use plain text without markdown, emojis, or special formatting.
+    Be empathetic but clinical. Provide specific advice based on their results."""
     
     user_prompt = f"""
-    PATIENT CONTEXT:
-    - Name: {patient_context.get('name', 'Patient') if patient_context else 'Patient'}
-    - Age: {patient_context.get('age', 'Unknown') if patient_context else 'Unknown'}
-    - Gender: {patient_context.get('gender', 'Unknown') if patient_context else 'Unknown'}
+    PATIENT: {patient_context.get('name', 'Patient') if patient_context else 'Patient'}
+    AGE: {patient_context.get('age', 'Unknown') if patient_context else 'Unknown'}
+    GENDER: {patient_context.get('gender', 'Unknown') if patient_context else 'Unknown'}
     
-    CKD RISK ASSESSMENT:
-    - Risk Score: {risk_score:.1f}%
-    - Risk Level: {"HIGH" if risk_score >= 70 else "MODERATE" if risk_score >= 40 else "LOW"}
+    CKD RISK: {risk_score:.1f}% ({'HIGH' if risk_score >= 70 else 'MODERATE' if risk_score >= 40 else 'LOW'})
     
-    KEY RISK FACTORS INCREASING RISK:
-    {json.dumps(top_risk_factors, indent=2) if top_risk_factors else "None significant"}
+    KEY RISK FACTORS:
+    {json.dumps(top_risk_factors, indent=2) if top_risk_factors else 'None significant'}
     
-    PROTECTIVE FACTORS REDUCING RISK:
-    {json.dumps(top_protective_factors, indent=2) if top_protective_factors else "None identified"}
+    PROTECTIVE FACTORS:
+    {json.dumps(top_protective_factors, indent=2) if top_protective_factors else 'None identified'}
     
-    ABNORMAL LAB VALUES:
+    ABNORMAL LABS:
     {generate_abnormal_labs_summary(patient_data)}
     
-    Please generate a personalized health report with:
-    1. A warm greeting using the patient's name
-    2. Clear explanation of their risk level (empathetic tone)
-    3. Top 3 factors affecting their kidney health (with specific values)
-    4. 3-5 actionable recommendations (prioritized)
-    5. Questions they should ask their doctor
-    6. An encouraging closing message
+    Provide a short health summary with:
+    1. Greeting and risk assessment
+    2. Top 2-3 factors affecting their health
+    3. 2-3 actionable recommendations
+    4. Questions for their doctor
+    5. Encouraging closing
     
-    Keep the tone supportive and empowering. Be specific - reference their actual values.
+    Keep it short, professional, and supportive. No markdown, no emojis.
     """
     
     # Call Gemini API
@@ -645,8 +498,9 @@ def generate_llm_rapport(probability, shap_explanations, patient_data, patient_c
                     }
                 ],
                 "generationConfig": {
-                    "temperature": 0.7,
-                    "maxOutputTokens": 1500,
+                    "temperature": 0.5,
+                    "maxOutputTokens": 800,  # Reduced from 1500
+                    "topP": 0.9,
                 },
             }
             response = requests.post(
@@ -781,10 +635,6 @@ async def health_check():
 
 @app.post("/predict")
 async def predict_ckd(payload: PredictionRequest):
-    logger.info("=" * 60)
-    logger.info("🔮 NEW PREDICTION REQUEST")
-    logger.info("=" * 60)
-    
     try:
         p = payload.data.copy()
         
@@ -800,48 +650,33 @@ async def predict_ckd(payload: PredictionRequest):
         p["Waist_Height_ratio"] = waist / height if height > 0 else 0.5
         
         # Prepare input array
-        input_values = []
-        for f in FEATURE_COLS:
-            val = float(p.get(f, 0))
-            input_values.append(val)
-        
-        input_array = np.array([input_values])
+        input_array = np.array([[float(p.get(f, 0)) for f in FEATURE_COLS]])
         
         # Get model prediction
         if xgb_model is None:
-            logger.error("❌ Model not loaded")
             raise HTTPException(status_code=503, detail="XGBoost model is not loaded")
 
         probabilities = xgb_model.predict_proba(input_array)[0]
         prob_ckd = float(probabilities[1])
-        logger.info(f"🎯 Prediction: {prob_ckd:.4f} (CKD probability)")
         
         # Get SHAP explanations
         shap_explanations = get_real_shap_explanations(input_array, FEATURE_COLS, p)
-        logger.info(f"📊 SHAP explanations: {len(shap_explanations) if shap_explanations else 0} factors")
         
         # Generate personalized rapport using Gemini
-        logger.info("📋 Generating personalized rapport...")
         personalized_rapport = generate_llm_rapport(
             prob_ckd, 
             shap_explanations, 
             p, 
             payload.patient_context
         )
-        logger.info(f"✅ Rapport generated: {personalized_rapport is not None}")
         
         # Generate clinical insights
-        logger.info("💡 Generating clinical insights...")
         clinical_insights = generate_clinical_insights(p, shap_explanations)
-        logger.info(f"✅ Clinical insights: {len(clinical_insights)}")
         
-        # Final log
-        logger.info("=" * 60)
-        logger.info("✅ PREDICTION COMPLETE")
-        logger.info(f"   - Prediction: {prob_ckd:.4f}")
-        logger.info(f"   - SHAP factors: {len(shap_explanations) if shap_explanations else 0}")
-        logger.info(f"   - Insights: {len(clinical_insights)}")
-        logger.info("=" * 60)
+        # Debug: Log what we're returning
+        print(f"📊 SHAP explanations count: {len(shap_explanations) if shap_explanations else 0}")
+        print(f"📋 Rapport generated: {personalized_rapport is not None}")
+        print(f"💡 Clinical insights count: {len(clinical_insights) if clinical_insights else 0}")
         
         return {
             "status": "success",
@@ -854,8 +689,8 @@ async def predict_ckd(payload: PredictionRequest):
         }
         
     except Exception as e:
-        logger.error(f"❌ PREDICTION ERROR: {e}")
-        logger.error(traceback.format_exc())
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 # ============================================
@@ -865,5 +700,4 @@ async def predict_ckd(payload: PredictionRequest):
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
-    logger.info(f"🚀 Starting server on port {port}")
     uvicorn.run(app, host="0.0.0.0", port=port)
