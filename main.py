@@ -1,4 +1,4 @@
-# app.py - REAL NVIDIA XAI Integration
+# app.py - CKD XGBoost API with XAI (Embedded SHAP Data)
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -11,17 +11,9 @@ import json
 import os
 import logging
 import requests
+from io import StringIO
 
-OPENAI_IMPORT_ERROR = None
-
-try:
-    from openai import OpenAI
-except Exception as e:
-    OpenAI = None
-    OPENAI_IMPORT_ERROR = str(e)
-    print(f"OpenAI package not available: {e}")
-
-app = FastAPI(title="CKD XGBoost API with Real NVIDIA XAI")
+app = FastAPI(title="CKD XGBoost API with XAI")
 
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
 logger = logging.getLogger("nephroshield-api")
@@ -35,25 +27,8 @@ app.add_middleware(
 )
 
 # ============================================
-# REAL NVIDIA API CONFIGURATION
+# GEMINI API CONFIGURATION
 # ============================================
-
-# NVIDIA NGC API (for actual model inference with explanations)
-NVIDIA_API_KEY = os.environ.get("NVIDIA_API_KEY", "")
-NVIDIA_BASE_URL = "https://health.api.nvidia.com/v1"
-
-# LLM configuration for personalized rapport generation
-# Default is Gemini first. Set LLM_PROVIDER=openai if you want OpenAI first.
-LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "gemini").strip().lower()
-
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
-openai_client = None
-if OPENAI_API_KEY and OpenAI is not None:
-    try:
-        openai_client = OpenAI(api_key=OPENAI_API_KEY)
-        logger.info("OpenAI client configured")
-    except Exception as e:
-        logger.warning("OpenAI client could not be initialized: %s", e)
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite").strip()
@@ -65,30 +40,54 @@ GEMINI_API_BASE_URL = os.environ.get(
 if GEMINI_API_KEY:
     logger.info("Gemini REST generation configured with model %s", GEMINI_MODEL)
 else:
-    logger.info("GEMINI_API_KEY not set; Gemini rapport generation disabled")
+    logger.warning("GEMINI_API_KEY not set; Gemini rapport generation disabled")
 
 # ============================================
-# LOAD YOUR EXISTING MODEL (Fallback)
+# EMBEDDED SHAP BACKGROUND DATA (No CSV needed!)
+# ============================================
+
+SHAP_BACKGROUND_CSV = """has_nsaid,LBXHGB,LBXTC,LBXTR,has_diabetes_med,URXUCR,sex_male,LBXSBU,BPQ020,BUN_Albumin_ratio,DIET_DRXTP225,DIQ010,URXUMA,LBXSUA,LBXBPB,RIDAGEYR,LBXBCD,BMXBMI,DIET_DRXT_V_LEGUMES,BPXSY1,Waist_Height_ratio,DIET_DRXT_G_WHOLE,LBX4PA,DIET_DRXT_PF_SOY,LBXSAL,LBXBCC,BMXWAIST,URXUCD,LBXTHG,BPXDI1,DIET_DRXTATOA,DIET_DRXTM221,race_Mexican_American,race_Other_Hispanic,race_NH_White,race_NH_Black,Pulse_Pressure,has_ace_arb,DIET_DRXTP184,LBXGLU,LBXGH,total_medications
+0,14.5,180,100,0,110,1,12,2,3.8,0.1,2,5,4.5,1.0,35,0.1,22,25,115,0.45,35,0.03,8,4.5,0.05,80,0.1,0.3,75,12,0.005,0,0,1,0,40,0,0.005,90,5.0,0
+1,13.0,210,150,1,90,0,20,1,5.5,0.3,1,30,6.0,0.8,55,0.2,29,15,140,0.55,20,0.08,3,3.9,0.15,92,0.2,0.6,90,8,0.015,1,0,0,0,50,1,0.015,110,6.5,2
+1,11.5,240,200,1,70,1,30,1,7.0,0.5,1,80,8.0,0.5,70,0.4,35,8,165,0.65,10,0.15,1,3.5,0.3,105,0.4,0.9,100,4,0.025,0,1,0,0,65,1,0.025,140,8.0,4
+0,12.8,195,130,0,95,1,18,1,4.8,0.2,2,15,5.5,0.9,60,0.15,27,18,135,0.52,25,0.06,4,4.0,0.12,90,0.18,0.5,85,9,0.012,0,0,0,1,50,0,0.012,100,5.8,1
+1,10.0,260,220,1,60,0,35,1,8.0,0.8,1,100,9.0,0.3,75,0.5,38,5,175,0.7,8,0.2,1,3.2,0.4,110,0.5,1.0,105,3,0.03,0,0,1,0,70,1,0.03,160,9.0,5"""
+
+# ============================================
+# LOAD YOUR EXISTING MODEL
 # ============================================
 try:
     with open("models/xgb_trackD.pkl", "rb") as f:
         xgb_model = pickle.load(f)
     print("✅ XGBoost model loaded")
 except Exception as e:
-    print(f"Error loading XGBoost model: {e}")
+    print(f"❌ Error loading XGBoost model: {e}")
     xgb_model = None
 
-# Load SHAP explainer (real SHAP, not static)
+# ============================================
+# LOAD SHAP EXPLAINER FROM EMBEDDED DATA
+# ============================================
+shap_explainer = None
+
 try:
-    background_data = pd.read_csv("models/shap_background.csv") if os.path.exists("models/shap_background.csv") else None
-    if xgb_model and background_data is not None:
+    # Load background data from embedded CSV string
+    background_data = pd.read_csv(StringIO(SHAP_BACKGROUND_CSV))
+    print(f"✅ Background data loaded: {background_data.shape}")
+    
+    if xgb_model is not None:
         shap_explainer = shap.TreeExplainer(xgb_model, background_data)
         print("✅ Real SHAP explainer loaded")
     else:
-        shap_explainer = None
+        print("⚠️ Model not loaded, SHAP explainer not created")
 except Exception as e:
-    print(f"Error loading SHAP explainer: {e}")
+    print(f"❌ Error loading SHAP explainer: {e}")
+    import traceback
+    traceback.print_exc()
     shap_explainer = None
+
+# ============================================
+# FEATURES
+# ============================================
 
 FEATURE_COLS = [
     "has_nsaid", "LBXHGB", "LBXTC", "LBXTR", "has_diabetes_med", "URXUCR",
@@ -130,8 +129,26 @@ class PredictionRequest(BaseModel):
     patient_context: Optional[Dict] = None
 
 # ============================================
-# REAL SHAP EXPLANATIONS (Dynamic, not static)
+# SHAP EXPLANATIONS
 # ============================================
+
+def get_reference_value(feature):
+    """Get reference (population average) value for context"""
+    reference_values = {
+        "LBXHGB": 13.8,
+        "LBXTC": 190,
+        "LBXTR": 110,
+        "BPXSY1": 120,
+        "BPXDI1": 80,
+        "BMXBMI": 27,
+        "LBXGLU": 95,
+        "LBXGH": 5.4,
+        "RIDAGEYR": 50,
+        "URXUCR": 100,
+        "URXUMA": 10,
+        "LBXSUA": 5.0,
+    }
+    return reference_values.get(feature, "N/A")
 
 def get_real_shap_explanations(input_array, feature_names, patient_values):
     """Get REAL SHAP values - dynamic based on actual input"""
@@ -139,7 +156,6 @@ def get_real_shap_explanations(input_array, feature_names, patient_values):
         return None
     
     try:
-        # Calculate real SHAP values for this specific patient
         shap_values = shap_explainer.shap_values(input_array)
         
         if isinstance(shap_values, list):
@@ -160,93 +176,157 @@ def get_real_shap_explanations(input_array, feature_names, patient_values):
                 "shap_value": float(shap_val),
                 "impact": "increases_risk" if shap_val > 0 else "decreases_risk",
                 "absolute_impact": abs(float(shap_val)),
-                "percent_contribution": 0  # Will calculate after normalization
+                "percent_contribution": 0
             })
         
-        # Normalize to get percentage contributions
         total_abs_impact = sum(e["absolute_impact"] for e in explanations)
         if total_abs_impact > 0:
             for e in explanations:
                 e["percent_contribution"] = round((e["absolute_impact"] / total_abs_impact) * 100, 1)
         
-        # Sort by absolute impact (most important first)
         explanations.sort(key=lambda x: x["absolute_impact"], reverse=True)
-        
-        return explanations[:15]  # Top 15 factors
+        return explanations[:15]
         
     except Exception as e:
         print(f"SHAP calculation error: {e}")
         return None
 
-def get_reference_value(feature):
-    """Get reference (population average) value for context"""
-    reference_values = {
-        "LBXHGB": 13.8,
-        "LBXTC": 190,
-        "LBXTR": 110,
-        "BPXSY1": 120,
-        "BPXDI1": 80,
-        "BMXBMI": 27,
-        "LBXGLU": 95,
-        "LBXGH": 5.4,
-        "RIDAGEYR": 50,
-        "URXUCR": 100,
-        "URXUMA": 10,
-        "LBXSUA": 5.0,
+# ============================================
+# GEMINI RAPPORT GENERATION
+# ============================================
+
+def generate_abnormal_labs_summary(patient_data):
+    """Extract abnormal lab values for LLM context"""
+    abnormal = []
+    
+    reference_ranges = {
+        "LBXHGB": (12, 16, "g/dL"),
+        "BPXSY1": (90, 130, "mmHg"),
+        "BPXDI1": (60, 85, "mmHg"),
+        "LBXGLU": (70, 100, "mg/dL"),
+        "LBXGH": (4, 5.7, "%"),
+        "BMXBMI": (18.5, 25, "kg/m²"),
+        "LBXTC": (125, 200, "mg/dL"),
+        "LBXTR": (50, 150, "mg/dL"),
+        "URXUMA": (0, 30, "µg/mL")
     }
-    return reference_values.get(feature, "N/A")
-
-# ============================================
-# REAL NVIDIA API INTEGRATION
-# ============================================
-
-def call_nvidia_xai_api(patient_data, features_list):
-    """Call NVIDIA's actual XAI API for model explanations"""
-    if not NVIDIA_API_KEY:
-        print("NVIDIA API key not configured, falling back to SHAP")
-        return None
     
-    try:
-        # NVIDIA's API endpoint for explainable AI
-        url = f"{NVIDIA_BASE_URL}/health/ckd/explain"
-        
-        headers = {
-            "Authorization": f"Bearer {NVIDIA_API_KEY}",
-            "Content-Type": "application/json"
-        }
-        
-        payload = {
-            "model": "ckd-risk-predictor",
-            "input_data": patient_data,
-            "explanation_type": "shap",  # Request SHAP explanations
-            "output_features": features_list[:20]  # Top features to explain
-        }
-        
-        response = requests.post(url, json=payload, headers=headers, timeout=30)
-        
-        if response.status_code == 200:
-            result = response.json()
-            return {
-                "nvidia_explanations": result.get("explanations", []),
-                "feature_importance": result.get("feature_importance", {}),
-                "counterfactuals": result.get("counterfactuals", [])  # What-if scenarios
-            }
-        else:
-            print(f"NVIDIA API error: {response.status_code}")
-            return None
-            
-    except Exception as e:
-        print(f"NVIDIA API call failed: {e}")
-        return None
-
-# ============================================
-# REAL LLM-POWERED RAPPORT (Not static)
-# ============================================
-
-def generate_llm_rapport(probability, shap_explanations, patient_data, patient_context, previous_rapports=None):
-    """Generate REAL personalized rapport using LLM (ChatGPT/Gemini)"""
+    for key, (low, high, unit) in reference_ranges.items():
+        if key in patient_data:
+            val = patient_data[key]
+            if val < low:
+                abnormal.append(f"- {FEATURE_DESCRIPTIONS.get(key, key)}: {val} {unit} (below normal range {low}-{high})")
+            elif val > high:
+                abnormal.append(f"- {FEATURE_DESCRIPTIONS.get(key, key)}: {val} {unit} (above normal range {low}-{high})")
     
-    # Prepare context for LLM
+    return "\n".join(abnormal) if abnormal else "All key markers within normal ranges."
+
+def generate_template_rapport(risk_score, top_risk_factors, top_protective_factors, patient_context):
+    """Dynamic template-based rapport (fallback when Gemini is unavailable)"""
+    
+    name = patient_context.get('name', 'there') if patient_context else 'there'
+    
+    if risk_score >= 70:
+        primary = f"I want to be direct with you, {name}, because early action matters. Your assessment shows a {risk_score:.0f}% risk for developing kidney disease over the next year."
+        empathy = "I know this sounds concerning, but knowing this now gives us a powerful advantage. Every day we can work on this together."
+    elif risk_score >= 40:
+        primary = f"{name}, your assessment shows a {risk_score:.0f}% risk for kidney disease. This is a signal to focus on protective measures."
+        empathy = "The good news is that moderate risk often responds very well to lifestyle changes and medication adjustments."
+    else:
+        primary = f"Great news, {name}! Your {risk_score:.0f}% risk score is in the low range. Your kidneys are functioning well relative to others your age."
+        empathy = "Keep up the good work - your current habits are protecting your kidney health."
+    
+    risk_section = ""
+    if top_risk_factors:
+        risk_section = "\n\n**What's affecting your kidney health:**\n"
+        for factor in top_risk_factors[:3]:
+            risk_section += f"• {factor['factor']} (currently {factor['value']}) - contributing {factor['impact_percent']:.0f}% to your risk score\n"
+    
+    recommendations = []
+    if any(f['factor'] == 'Blood pressure' for f in top_risk_factors):
+        recommendations.append("• 🫀 Work with your doctor to bring blood pressure below 130/80")
+    if any(f['factor'] == 'HbA1c' for f in top_risk_factors):
+        recommendations.append("• 📊 Improve blood sugar control - aim for HbA1c below 7%")
+    if any(f['factor'] == 'BMI' for f in top_risk_factors):
+        recommendations.append("• ⚖️ Consider a 5-10% weight reduction goal")
+    if any(f['factor'] == 'Hemoglobin' for f in top_risk_factors):
+        recommendations.append("• 🩸 Discuss anemia management with your doctor")
+    
+    if not recommendations:
+        recommendations = [
+            "• 🩺 Schedule your annual kidney function check",
+            "• 💧 Stay well hydrated (6-8 glasses of water daily)",
+            "• 🧂 Limit sodium to less than 2300mg per day",
+            "• 🏃 Aim for 150 minutes of moderate exercise weekly"
+        ]
+    
+    recs_text = "\n\n**Your Action Plan:**\n" + "\n".join(recommendations[:4])
+    full_text = primary + risk_section + recs_text + f"\n\n{empathy}\n\nWarmly,\nYour Kidney Health Team"
+    
+    return {
+        "risk_category": "high" if risk_score >= 70 else "moderate" if risk_score >= 40 else "low",
+        "urgency": "Schedule follow-up within 1-2 weeks" if risk_score >= 70 else "Schedule within 3 months" if risk_score >= 40 else "Annual check-up",
+        "tone": "concerned" if risk_score >= 70 else "proactive" if risk_score >= 40 else "reassuring",
+        "full_rapport_text": full_text,
+        "recommendations": recommendations[:5],
+        "questions_for_doctor": [
+            "What's my target blood pressure?",
+            "Do I need medication adjustments?",
+            "When should I repeat these tests?"
+        ],
+        "llm_generated": False,
+        "llm_provider": "template",
+        "llm_model": None
+    }
+
+def extract_structured_from_llm(llm_text, risk_score, top_factors, provider="gemini", model_name=None):
+    """Extract structured data from LLM response"""
+    if risk_score >= 70:
+        risk_category = "high"
+        urgency = "Please schedule a follow-up within 1-2 weeks"
+        tone = "concerned_but_supportive"
+    elif risk_score >= 40:
+        risk_category = "moderate"
+        urgency = "Schedule a follow-up within 1-3 months"
+        tone = "proactive"
+    else:
+        risk_category = "low"
+        urgency = "Continue regular annual check-ups"
+        tone = "reassuring"
+    
+    recommendations = []
+    lines = llm_text.split('\n')
+    for line in lines:
+        if any(word in line.lower() for word in ['recommend', 'should', 'consider', 'try', 'aim']):
+            if len(line.strip()) > 20:
+                recommendations.append({
+                    "action": line.strip()[:50],
+                    "detail": line.strip(),
+                    "priority": "high" if "urgent" in line.lower() or "immediately" in line.lower() else "medium"
+                })
+    
+    return {
+        "risk_category": risk_category,
+        "urgency": urgency,
+        "tone": tone,
+        "full_rapport_text": llm_text,
+        "recommendations": recommendations[:5],
+        "questions_for_doctor": [
+            "What is my target blood pressure given my results?",
+            "Should I be concerned about my {top_factor} level?".format(
+                top_factor=top_factors[0]['factor'] if top_factors else "kidney function"
+            ),
+            "Are there any medications I should avoid?",
+            "How often should I repeat these tests?"
+        ],
+        "llm_generated": True,
+        "llm_provider": provider,
+        "llm_model": model_name
+    }
+
+def generate_llm_rapport(probability, shap_explanations, patient_data, patient_context):
+    """Generate personalized rapport using Gemini"""
+    
     risk_score = probability * 100
     
     # Format SHAP explanations for LLM
@@ -305,10 +385,8 @@ def generate_llm_rapport(probability, shap_explanations, patient_data, patient_c
     Keep the tone supportive and empowering. Be specific - reference their actual values.
     """
     
-    def _call_gemini():
-        if not GEMINI_API_KEY:
-            return None
-
+    # Call Gemini API
+    if GEMINI_API_KEY:
         try:
             gemini_prompt = f"{system_prompt}\n\n{user_prompt}"
             url = f"{GEMINI_API_BASE_URL}/models/{GEMINI_MODEL}:generateContent"
@@ -333,13 +411,13 @@ def generate_llm_rapport(probability, shap_explanations, patient_data, patient_c
 
             if response.status_code >= 400:
                 logger.warning("Gemini API HTTP %s: %s", response.status_code, response.text[:1000])
-                return None
+                return generate_template_rapport(risk_score, top_risk_factors, top_protective_factors, patient_context)
 
             data = response.json()
             candidates = data.get("candidates") or []
             if not candidates:
-                logger.warning("Gemini returned no candidates: %s", data)
-                return None
+                logger.warning("Gemini returned no candidates")
+                return generate_template_rapport(risk_score, top_risk_factors, top_protective_factors, patient_context)
 
             parts = candidates[0].get("content", {}).get("parts", [])
             llm_rapport = "\n".join(
@@ -347,8 +425,8 @@ def generate_llm_rapport(probability, shap_explanations, patient_data, patient_c
             ).strip()
 
             if not llm_rapport:
-                logger.warning("Gemini returned an empty text response: %s", data)
-                return None
+                logger.warning("Gemini returned an empty text response")
+                return generate_template_rapport(risk_score, top_risk_factors, top_protective_factors, patient_context)
 
             return extract_structured_from_llm(
                 llm_rapport,
@@ -359,268 +437,19 @@ def generate_llm_rapport(probability, shap_explanations, patient_data, patient_c
             )
         except Exception as e:
             logger.warning("Gemini API error: %s", e)
-            return None
-
-    def _call_openai():
-        if not openai_client:
-            return None
-        try:
-            response = openai_client.chat.completions.create(
-                model=os.environ.get("OPENAI_MODEL", "gpt-4o-mini"),
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                temperature=0.7,
-                max_tokens=1500
-            )
-            llm_rapport = (response.choices[0].message.content or "").strip()
-            if not llm_rapport:
-                raise ValueError("OpenAI returned an empty text response")
-            return extract_structured_from_llm(
-                llm_rapport,
-                risk_score,
-                top_risk_factors,
-                provider="openai",
-                model_name=os.environ.get("OPENAI_MODEL", "gpt-4o-mini"),
-            )
-        except Exception as e:
-            logger.warning("OpenAI API error: %s", e)
-            return None
-
-    # Try the preferred provider first, then the other provider, then the template.
-    providers = [_call_openai, _call_gemini] if LLM_PROVIDER == "openai" else [_call_gemini, _call_openai]
-    for call_provider in providers:
-        structured = call_provider()
-        if structured is not None:
-            return structured
-
-    # Ultimate fallback - template-based but still dynamic
+            return generate_template_rapport(risk_score, top_risk_factors, top_protective_factors, patient_context)
+    
+    # Fallback to template
     return generate_template_rapport(risk_score, top_risk_factors, top_protective_factors, patient_context)
 
-def generate_abnormal_labs_summary(patient_data):
-    """Extract abnormal lab values for LLM context"""
-    abnormal = []
-    
-    reference_ranges = {
-        "LBXHGB": (12, 16, "g/dL"),
-        "BPXSY1": (90, 130, "mmHg"),
-        "BPXDI1": (60, 85, "mmHg"),
-        "LBXGLU": (70, 100, "mg/dL"),
-        "LBXGH": (4, 5.7, "%"),
-        "BMXBMI": (18.5, 25, "kg/m²"),
-        "LBXTC": (125, 200, "mg/dL"),
-        "LBXTR": (50, 150, "mg/dL"),
-        "URXUMA": (0, 30, "µg/mL")
-    }
-    
-    for key, (low, high, unit) in reference_ranges.items():
-        if key in patient_data:
-            val = patient_data[key]
-            if val < low:
-                abnormal.append(f"- {FEATURE_DESCRIPTIONS.get(key, key)}: {val} {unit} (below normal range {low}-{high})")
-            elif val > high:
-                abnormal.append(f"- {FEATURE_DESCRIPTIONS.get(key, key)}: {val} {unit} (above normal range {low}-{high})")
-    
-    return "\n".join(abnormal) if abnormal else "All key markers within normal ranges."
-
-def extract_structured_from_llm(llm_text, risk_score, top_factors, provider="llm", model_name=None):
-    """Extract structured data from LLM response"""
-    # Determine risk category
-    if risk_score >= 70:
-        risk_category = "high"
-        urgency = "Please schedule a follow-up within 1-2 weeks"
-        tone = "concerned_but_supportive"
-    elif risk_score >= 40:
-        risk_category = "moderate"
-        urgency = "Schedule a follow-up within 1-3 months"
-        tone = "proactive"
-    else:
-        risk_category = "low"
-        urgency = "Continue regular annual check-ups"
-        tone = "reassuring"
-    
-    # Parse recommendations from LLM text (simple extraction)
-    recommendations = []
-    lines = llm_text.split('\n')
-    for line in lines:
-        if any(word in line.lower() for word in ['recommend', 'should', 'consider', 'try', 'aim']):
-            if len(line.strip()) > 20:
-                recommendations.append({
-                    "action": line.strip()[:50],
-                    "detail": line.strip(),
-                    "priority": "high" if "urgent" in line.lower() or "immediately" in line.lower() else "medium"
-                })
-    
-    return {
-        "risk_category": risk_category,
-        "urgency": urgency,
-        "tone": tone,
-        "full_rapport_text": llm_text,
-        "recommendations": recommendations[:5],
-        "questions_for_doctor": [
-            "What is my target blood pressure given my results?",
-            "Should I be concerned about my {top_factor} level?".format(
-                top_factor=top_factors[0]['factor'] if top_factors else "kidney function"
-            ),
-            "Are there any medications I should avoid?",
-            "How often should I repeat these tests?"
-        ],
-        "llm_generated": True,
-        "llm_provider": provider,
-        "llm_model": model_name
-    }
-
-def generate_template_rapport(risk_score, top_risk_factors, top_protective_factors, patient_context):
-    """Dynamic template-based rapport (still personalized, not static)"""
-    
-    name = patient_context.get('name', 'there') if patient_context else 'there'
-    
-    if risk_score >= 70:
-        primary = f"I want to be direct with you, {name}, because early action matters. Your assessment shows a {risk_score:.0f}% risk for developing kidney disease over the next year."
-        empathy = "I know this sounds concerning, but knowing this now gives us a powerful advantage. Every day we can work on this together."
-    elif risk_score >= 40:
-        primary = f"{name}, your assessment shows a {risk_score:.0f}% risk for kidney disease. This is a signal to focus on protective measures."
-        empathy = "The good news is that moderate risk often responds very well to lifestyle changes and medication adjustments."
-    else:
-        primary = f"Great news, {name}! Your {risk_score:.0f}% risk score is in the low range. Your kidneys are functioning well relative to others your age."
-        empathy = "Keep up the good work - your current habits are protecting your kidney health."
-    
-    # Dynamic risk factors section
-    risk_section = ""
-    if top_risk_factors:
-        risk_section = "\n\n**What's affecting your kidney health:**\n"
-        for factor in top_risk_factors[:3]:
-            risk_section += f"• {factor['factor']} (currently {factor['value']}) - contributing {factor['percent_contribution']:.0f}% to your risk score\n"
-    
-    # Dynamic recommendations based on actual values
-    recommendations = []
-    if any(f['factor'] == 'Blood pressure' for f in top_risk_factors):
-        recommendations.append("• 🫀 Work with your doctor to bring blood pressure below 130/80")
-    if any(f['factor'] == 'HbA1c' for f in top_risk_factors):
-        recommendations.append("• 📊 Improve blood sugar control - aim for HbA1c below 7%")
-    if any(f['factor'] == 'BMI' for f in top_risk_factors):
-        recommendations.append("• ⚖️ Consider a 5-10% weight reduction goal")
-    if any(f['factor'] == 'Hemoglobin' for f in top_risk_factors):
-        recommendations.append("• 🩸 Discuss anemia management with your doctor")
-    
-    if not recommendations:
-        recommendations = [
-            "• 🩺 Schedule your annual kidney function check",
-            "• 💧 Stay well hydrated (6-8 glasses of water daily)",
-            "• 🧂 Limit sodium to less than 2300mg per day",
-            "• 🏃 Aim for 150 minutes of moderate exercise weekly"
-        ]
-    
-    recs_text = "\n\n**Your Action Plan:**\n" + "\n".join(recommendations[:4])
-    
-    full_text = primary + risk_section + recs_text + f"\n\n{empathy}\n\nWarmly,\nYour Kidney Health Team"
-    
-    return {
-        "risk_category": "high" if risk_score >= 70 else "moderate" if risk_score >= 40 else "low",
-        "urgency": "Schedule follow-up within 1-2 weeks" if risk_score >= 70 else "Schedule within 3 months" if risk_score >= 40 else "Annual check-up",
-        "tone": "concerned" if risk_score >= 70 else "proactive" if risk_score >= 40 else "reassuring",
-        "full_rapport_text": full_text,
-        "recommendations": recommendations[:5],
-        "questions_for_doctor": [
-            "What's my target blood pressure?",
-            "Do I need medication adjustments?",
-            "When should I repeat these tests?"
-        ],
-        "llm_generated": False,
-        "llm_provider": "template",
-        "llm_model": None
-    }
-
-@app.get("/health")
-async def health_check():
-    """Simple deployment health check, including LLM readiness."""
-    return {
-        "status": "ok",
-        "model_loaded": xgb_model is not None,
-        "shap_enabled": shap_explainer is not None,
-        "gemini_configured": bool(GEMINI_API_KEY),
-        "gemini_api_key_present": bool(GEMINI_API_KEY),
-        "gemini_method": "rest",
-        "gemini_model": GEMINI_MODEL,
-        "gemini_api_base_url": GEMINI_API_BASE_URL,
-        "openai_configured": openai_client is not None,
-        "openai_api_key_present": bool(OPENAI_API_KEY),
-        "openai_package_available": OpenAI is not None,
-        "openai_import_error": OPENAI_IMPORT_ERROR,
-        "llm_provider_preference": LLM_PROVIDER,
-    }
-
 # ============================================
-# MAIN PREDICTION ENDPOINT
+# CLINICAL INSIGHTS
 # ============================================
-
-@app.post("/predict")
-async def predict_ckd(payload: PredictionRequest):
-    try:
-        p = payload.data.copy()
-        
-        # Feature engineering (dynamic)
-        if "LBXSAL" in p and p["LBXSAL"] > 0:
-            p["BUN_Albumin_ratio"] = p.get("LBXSBU", 15) / p["LBXSAL"]
-        else:
-            p["BUN_Albumin_ratio"] = p.get("LBXSBU", 15) / 4.2
-        
-        p["Pulse_Pressure"] = p.get("BPXSY1", 120) - p.get("BPXDI1", 80)
-        waist = p.get("BMXWAIST", 88)
-        height = payload.height_cm
-        p["Waist_Height_ratio"] = waist / height if height > 0 else 0.5
-        
-        # Prepare input array
-        input_array = np.array([[float(p.get(f, 0)) for f in FEATURE_COLS]])
-        
-        # Get model prediction
-        if xgb_model is None:
-            raise HTTPException(status_code=503, detail="XGBoost model is not loaded")
-
-        probabilities = xgb_model.predict_proba(input_array)[0]
-        prob_ckd = float(probabilities[1])
-        
-        # Get REAL SHAP explanations (dynamic, based on this patient)
-        shap_explanations = get_real_shap_explanations(input_array, FEATURE_COLS, p)
-        
-        # Try NVIDIA XAI API if available (more advanced)
-        nvidia_explanations = None
-        if NVIDIA_API_KEY:
-            nvidia_explanations = call_nvidia_xai_api(p, FEATURE_COLS)
-        
-        # Generate REAL LLM-powered rapport (not static)
-        personalized_rapport = generate_llm_rapport(
-            prob_ckd, 
-            shap_explanations, 
-            p, 
-            payload.patient_context
-        )
-        
-        # Generate clinical insights (dynamic based on actual values)
-        clinical_insights = generate_clinical_insights(p, shap_explanations)
-        
-        return {
-            "status": "success",
-            "ckd_probability": round(prob_ckd, 4),
-            "prediction": "CKD" if prob_ckd >= 0.5 else "No CKD",
-            "risk_level": "High" if prob_ckd > 0.7 else "Moderate" if prob_ckd > 0.3 else "Low",
-            "shap_explanations": shap_explanations,  # REAL SHAP values
-            "nvidia_explanations": nvidia_explanations,  # NVIDIA XAI if available
-            "personalized_rapport": personalized_rapport,  # LLM-generated
-            "clinical_insights": clinical_insights
-        }
-        
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
 
 def generate_clinical_insights(patient_data, shap_explanations):
     """Generate dynamic clinical insights based on actual values"""
     insights = []
     
-    # Check each parameter against clinical guidelines
     clinical_rules = [
         {
             "parameter": "BPXSY1",
@@ -670,7 +499,6 @@ def generate_clinical_insights(patient_data, shap_explanations):
                     "evidence": rule["evidence"]
                 })
     
-    # Add SHAP-based insights
     if shap_explanations:
         for exp in shap_explanations[:3]:
             if exp["impact"] == "increases_risk" and exp["percent_contribution"] > 10:
@@ -684,6 +512,89 @@ def generate_clinical_insights(patient_data, shap_explanations):
                 })
     
     return insights
+
+# ============================================
+# HEALTH CHECK ENDPOINT
+# ============================================
+
+@app.get("/health")
+async def health_check():
+    """Simple deployment health check"""
+    return {
+        "status": "ok",
+        "model_loaded": xgb_model is not None,
+        "shap_enabled": shap_explainer is not None,
+        "gemini_configured": bool(GEMINI_API_KEY),
+        "gemini_model": GEMINI_MODEL,
+    }
+
+# ============================================
+# MAIN PREDICTION ENDPOINT
+# ============================================
+
+@app.post("/predict")
+async def predict_ckd(payload: PredictionRequest):
+    try:
+        p = payload.data.copy()
+        
+        # Feature engineering
+        if "LBXSAL" in p and p["LBXSAL"] > 0:
+            p["BUN_Albumin_ratio"] = p.get("LBXSBU", 15) / p["LBXSAL"]
+        else:
+            p["BUN_Albumin_ratio"] = p.get("LBXSBU", 15) / 4.2
+        
+        p["Pulse_Pressure"] = p.get("BPXSY1", 120) - p.get("BPXDI1", 80)
+        waist = p.get("BMXWAIST", 88)
+        height = payload.height_cm
+        p["Waist_Height_ratio"] = waist / height if height > 0 else 0.5
+        
+        # Prepare input array
+        input_array = np.array([[float(p.get(f, 0)) for f in FEATURE_COLS]])
+        
+        # Get model prediction
+        if xgb_model is None:
+            raise HTTPException(status_code=503, detail="XGBoost model is not loaded")
+
+        probabilities = xgb_model.predict_proba(input_array)[0]
+        prob_ckd = float(probabilities[1])
+        
+        # Get SHAP explanations
+        shap_explanations = get_real_shap_explanations(input_array, FEATURE_COLS, p)
+        
+        # Generate personalized rapport using Gemini
+        personalized_rapport = generate_llm_rapport(
+            prob_ckd, 
+            shap_explanations, 
+            p, 
+            payload.patient_context
+        )
+        
+        # Generate clinical insights
+        clinical_insights = generate_clinical_insights(p, shap_explanations)
+        
+        # Debug: Log what we're returning
+        print(f"📊 SHAP explanations count: {len(shap_explanations) if shap_explanations else 0}")
+        print(f"📋 Rapport generated: {personalized_rapport is not None}")
+        print(f"💡 Clinical insights count: {len(clinical_insights) if clinical_insights else 0}")
+        
+        return {
+            "status": "success",
+            "ckd_probability": round(prob_ckd, 4),
+            "prediction": "CKD" if prob_ckd >= 0.5 else "No CKD",
+            "risk_level": "High" if prob_ckd > 0.7 else "Moderate" if prob_ckd > 0.3 else "Low",
+            "shap_explanations": shap_explanations if shap_explanations else [],
+            "personalized_rapport": personalized_rapport if personalized_rapport else {},
+            "clinical_insights": clinical_insights if clinical_insights else []
+        }
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ============================================
+# RUN SERVER
+# ============================================
 
 if __name__ == "__main__":
     import uvicorn
