@@ -1,4 +1,4 @@
-# app.py - CKD XGBoost API with XAI (Embedded SHAP Data) - WITH DEBUG LOGGING
+# app.py - CKD XGBoost API with XAI (Embedded SHAP Data) - WITH COMPLETE REFERENCE RANGES
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -48,9 +48,6 @@ GEMINI_API_BASE_URL = os.environ.get(
     "https://generativelanguage.googleapis.com/v1beta",
 ).rstrip("/")
 
-logger.info(f"🔑 GEMINI_API_KEY present: {bool(GEMINI_API_KEY)}")
-logger.info(f"🤖 GEMINI_MODEL: {GEMINI_MODEL}")
-
 if GEMINI_API_KEY:
     logger.info("✅ Gemini REST generation configured with model %s", GEMINI_MODEL)
 else:
@@ -80,24 +77,14 @@ try:
     
     if not os.path.exists(model_path):
         logger.error(f"❌ Model file not found at: {model_path}")
-        logger.error(f"📁 Current directory: {os.getcwd()}")
-        logger.error(f"📁 Files in directory: {os.listdir('.') if os.path.exists('.') else 'Cannot list'}")
         xgb_model = None
     else:
         with open(model_path, "rb") as f:
             xgb_model = pickle.load(f)
         logger.info(f"✅ XGBoost model loaded successfully")
-        logger.info(f"📊 Model type: {type(xgb_model)}")
         
-        # Check if model has predict_proba
-        if hasattr(xgb_model, 'predict_proba'):
-            logger.info("✅ Model has predict_proba method")
-        else:
-            logger.warning("⚠️ Model does NOT have predict_proba method")
-            
 except Exception as e:
     logger.error(f"❌ Error loading XGBoost model: {e}")
-    logger.error(traceback.format_exc())
     xgb_model = None
 
 # ============================================
@@ -107,24 +94,18 @@ shap_explainer = None
 
 try:
     logger.info("📊 Loading SHAP background data...")
-    
-    # Load background data from embedded CSV string
     background_data = pd.read_csv(StringIO(SHAP_BACKGROUND_CSV))
     logger.info(f"✅ Background data loaded: {background_data.shape}")
-    logger.info(f"📊 Background columns: {background_data.columns.tolist()[:5]}...")
     
     if xgb_model is not None:
         logger.info("🔧 Creating SHAP TreeExplainer...")
         shap_explainer = shap.TreeExplainer(xgb_model, background_data)
         logger.info("✅ Real SHAP explainer loaded successfully!")
-        logger.info(f"📊 SHAP explainer type: {type(shap_explainer)}")
     else:
         logger.warning("⚠️ Model not loaded, SHAP explainer not created")
-        shap_explainer = None
         
 except Exception as e:
     logger.error(f"❌ Error loading SHAP explainer: {e}")
-    logger.error(traceback.format_exc())
     shap_explainer = None
 
 logger.info("=" * 60)
@@ -157,16 +138,38 @@ FEATURE_DESCRIPTIONS = {
     "LBXSBU": "Blood urea nitrogen (BUN)",
     "BPQ020": "Hypertension history",
     "BUN_Albumin_ratio": "BUN to Albumin ratio",
+    "DIET_DRXTP225": "Total protein intake",
     "DIQ010": "Diabetes diagnosis",
     "URXUMA": "Urinary albumin",
     "LBXSUA": "Uric acid",
+    "LBXBPB": "Blood lead",
     "RIDAGEYR": "Age",
+    "LBXBCD": "Blood cadmium",
     "BMXBMI": "BMI",
+    "DIET_DRXT_V_LEGUMES": "Legume intake",
     "BPXSY1": "Systolic blood pressure",
+    "Waist_Height_ratio": "Waist-to-height ratio",
+    "DIET_DRXT_G_WHOLE": "Whole grain intake",
+    "LBX4PA": "Blood mercury",
+    "DIET_DRXT_PF_SOY": "Soy protein intake",
+    "LBXSAL": "Serum albumin",
+    "LBXBCC": "Blood cobalt",
+    "BMXWAIST": "Waist circumference",
+    "URXUCD": "Urinary cadmium",
+    "LBXTHG": "Blood thallium",
     "BPXDI1": "Diastolic blood pressure",
+    "DIET_DRXTATOA": "Vitamin E intake",
+    "DIET_DRXTM221": "Omega-3 intake",
+    "race_Mexican_American": "Mexican American race",
+    "race_Other_Hispanic": "Other Hispanic race",
+    "race_NH_White": "Non-Hispanic White race",
+    "race_NH_Black": "Non-Hispanic Black race",
+    "Pulse_Pressure": "Pulse pressure",
     "has_ace_arb": "ACE/ARB medication",
+    "DIET_DRXTP184": "Omega-6 intake",
     "LBXGLU": "Blood glucose",
     "LBXGH": "HbA1c",
+    "total_medications": "Total medications"
 }
 
 class PredictionRequest(BaseModel):
@@ -175,7 +178,129 @@ class PredictionRequest(BaseModel):
     patient_context: Optional[Dict] = None
 
 # ============================================
-# FALLBACK EXPLANATIONS (WHEN SHAP FAILS)
+# REFERENCE VALUES AND NORMAL RANGES
+# ============================================
+
+def get_reference_value(feature):
+    """Get reference (population average) value for context"""
+    reference_values = {
+        # Blood markers
+        "LBXHGB": 13.8,
+        "LBXTC": 190,
+        "LBXTR": 110,
+        "LBXSBU": 15,
+        "LBXSAL": 4.2,
+        "LBXSUA": 5.0,
+        "LBXGLU": 95,
+        "LBXGH": 5.4,
+        "LBXBPB": 1.0,
+        "LBXBCD": 0.2,
+        "LBX4PA": 0.05,
+        "LBXBCC": 0.1,
+        "LBXTHG": 0.5,
+        
+        # Vital signs
+        "BPXSY1": 120,
+        "BPXDI1": 80,
+        "BMXBMI": 27,
+        "BMXWAIST": 88,
+        
+        # Urine markers
+        "URXUCR": 100,
+        "URXUMA": 10,
+        "URXUCD": 0.15,
+        
+        # Demographic
+        "RIDAGEYR": 50,
+        "sex_male": 0.5,
+        
+        # Medical history
+        "BPQ020": 2,
+        "DIQ010": 2,
+        "has_diabetes_med": 0,
+        "has_nsaid": 0,
+        "has_ace_arb": 0,
+        "total_medications": 0,
+        
+        # Calculated
+        "BUN_Albumin_ratio": 3.8,
+        "Pulse_Pressure": 40,
+        "Waist_Height_ratio": 0.5,
+        
+        # Diet
+        "DIET_DRXTP225": 0.1,
+        "DIET_DRXT_V_LEGUMES": 20,
+        "DIET_DRXT_G_WHOLE": 30,
+        "DIET_DRXT_PF_SOY": 5,
+        "DIET_DRXTATOA": 10,
+        "DIET_DRXTM221": 0.01,
+        "DIET_DRXTP184": 0.01,
+        
+        # Race
+        "race_Mexican_American": 0,
+        "race_Other_Hispanic": 0,
+        "race_NH_White": 0,
+        "race_NH_Black": 0,
+    }
+    return reference_values.get(feature, None)
+
+def get_normal_range(feature):
+    """Get normal range for display with units"""
+    ranges = {
+        "LBXHGB": "12-16 g/dL",
+        "LBXTC": "125-200 mg/dL",
+        "LBXTR": "50-150 mg/dL",
+        "LBXSBU": "7-20 mg/dL",
+        "LBXSAL": "3.5-5.0 g/dL",
+        "LBXSUA": "3.5-7.2 mg/dL",
+        "LBXGLU": "70-100 mg/dL",
+        "LBXGH": "4.0-5.7%",
+        "LBXBPB": "0-2.0 µg/dL",
+        "LBXBCD": "0-0.5 µg/L",
+        "LBX4PA": "0-0.1 µg/L",
+        "LBXBCC": "0-0.2 µg/L",
+        "LBXTHG": "0-1.0 µg/L",
+        
+        "BPXSY1": "90-130 mmHg",
+        "BPXDI1": "60-85 mmHg",
+        "BMXBMI": "18.5-25 kg/m²",
+        "BMXWAIST": "≤88 cm (F) / ≤102 cm (M)",
+        
+        "URXUCR": "50-150 mg/dL",
+        "URXUMA": "0-30 µg/mL",
+        "URXUCD": "0-0.3 µg/L",
+        
+        "RIDAGEYR": "18-65 years",
+        "sex_male": "0=Female, 1=Male",
+        
+        "BPQ020": "1=Yes, 2=No",
+        "DIQ010": "1=Yes, 2=No",
+        "has_diabetes_med": "0=No, 1=Yes",
+        "has_nsaid": "0=No, 1=Yes",
+        "has_ace_arb": "0=No, 1=Yes",
+        "total_medications": "0-5",
+        
+        "BUN_Albumin_ratio": "3.5-5.5",
+        "Pulse_Pressure": "30-50 mmHg",
+        "Waist_Height_ratio": "0.45-0.55",
+        
+        "DIET_DRXTP225": "0.05-0.2 g",
+        "DIET_DRXT_V_LEGUMES": "15-25 g",
+        "DIET_DRXT_G_WHOLE": "25-35 g",
+        "DIET_DRXT_PF_SOY": "3-8 g",
+        "DIET_DRXTATOA": "8-15 mg",
+        "DIET_DRXTM221": "0.005-0.015 g",
+        "DIET_DRXTP184": "0.005-0.015 g",
+        
+        "race_Mexican_American": "0=No, 1=Yes",
+        "race_Other_Hispanic": "0=No, 1=Yes",
+        "race_NH_White": "0=No, 1=Yes",
+        "race_NH_Black": "0=No, 1=Yes",
+    }
+    return ranges.get(feature, None)
+
+# ============================================
+# FALLBACK EXPLANATIONS
 # ============================================
 
 def get_fallback_explanations(feature_names, patient_values):
@@ -196,9 +321,10 @@ def get_fallback_explanations(feature_names, patient_values):
     for feature in feature_names:
         actual_value = patient_values.get(feature, 0)
         reference_value = get_reference_value(feature)
+        normal_range = get_normal_range(feature)
         
         # Calculate deviation from reference
-        if reference_value != "N/A" and isinstance(reference_value, (int, float)):
+        if reference_value is not None and isinstance(reference_value, (int, float)):
             try:
                 deviation = abs(float(actual_value) - float(reference_value)) / float(reference_value) if float(reference_value) > 0 else 0
             except:
@@ -211,12 +337,12 @@ def get_fallback_explanations(feature_names, patient_values):
         
         # Determine impact
         if feature in ["LBXHGB"]:
-            if reference_value != "N/A":
+            if reference_value is not None:
                 impact = "decreases_risk" if float(actual_value) > float(reference_value) else "increases_risk"
             else:
                 impact = "decreases_risk"
-        elif feature in ["LBXGLU", "LBXGH", "BPXSY1", "URXUMA", "BMXBMI", "LBXTC", "LBXTR"]:
-            if reference_value != "N/A":
+        elif feature in ["LBXGLU", "LBXGH", "BPXSY1", "URXUMA", "BMXBMI", "LBXTC", "LBXTR", "LBXSBU", "URXUCR"]:
+            if reference_value is not None:
                 impact = "increases_risk" if float(actual_value) > float(reference_value) else "decreases_risk"
             else:
                 impact = "increases_risk"
@@ -228,6 +354,7 @@ def get_fallback_explanations(feature_names, patient_values):
             "description": FEATURE_DESCRIPTIONS.get(feature, feature),
             "actual_value": actual_value,
             "reference_value": reference_value,
+            "normal_range": normal_range,
             "shap_value": float(shap_val),
             "impact": impact,
             "absolute_impact": abs(float(shap_val)),
@@ -246,24 +373,6 @@ def get_fallback_explanations(feature_names, patient_values):
 # ============================================
 # SHAP EXPLANATIONS
 # ============================================
-
-def get_reference_value(feature):
-    """Get reference (population average) value for context"""
-    reference_values = {
-        "LBXHGB": 13.8,
-        "LBXTC": 190,
-        "LBXTR": 110,
-        "BPXSY1": 120,
-        "BPXDI1": 80,
-        "BMXBMI": 27,
-        "LBXGLU": 95,
-        "LBXGH": 5.4,
-        "RIDAGEYR": 50,
-        "URXUCR": 100,
-        "URXUMA": 10,
-        "LBXSUA": 5.0,
-    }
-    return reference_values.get(feature, "N/A")
 
 def get_real_shap_explanations(input_array, feature_names, patient_values):
     """Get REAL SHAP values with fallback"""
@@ -292,12 +401,14 @@ def get_real_shap_explanations(input_array, feature_names, patient_values):
         for i, (feature, shap_val) in enumerate(zip(feature_names, shap_values)):
             actual_value = patient_values.get(feature, "N/A")
             reference_value = get_reference_value(feature)
+            normal_range = get_normal_range(feature)
             
             explanations.append({
                 "feature": feature,
                 "description": FEATURE_DESCRIPTIONS.get(feature, feature),
                 "actual_value": actual_value,
                 "reference_value": reference_value,
+                "normal_range": normal_range,
                 "shap_value": float(shap_val),
                 "impact": "increases_risk" if shap_val > 0 else "decreases_risk",
                 "absolute_impact": abs(float(shap_val)),
@@ -312,10 +423,6 @@ def get_real_shap_explanations(input_array, feature_names, patient_values):
         explanations.sort(key=lambda x: x["absolute_impact"], reverse=True)
         result = explanations[:15]
         logger.info(f"✅ SHAP explanations generated: {len(result)} factors")
-        
-        # Log top 3 factors
-        for i, exp in enumerate(result[:3]):
-            logger.info(f"   Top {i+1}: {exp['description']} - {exp['impact']} ({exp['percent_contribution']:.1f}%)")
         
         return result
         
@@ -342,7 +449,13 @@ def generate_abnormal_labs_summary(patient_data):
         "BMXBMI": (18.5, 25, "kg/m²"),
         "LBXTC": (125, 200, "mg/dL"),
         "LBXTR": (50, 150, "mg/dL"),
-        "URXUMA": (0, 30, "µg/mL")
+        "URXUMA": (0, 30, "µg/mL"),
+        "LBXSBU": (7, 20, "mg/dL"),
+        "LBXSAL": (3.5, 5.0, "g/dL"),
+        "LBXSUA": (3.5, 7.2, "mg/dL"),
+        "URXUCR": (50, 150, "mg/dL"),
+        "BMXWAIST": (0, 102, "cm"),
+        "RIDAGEYR": (18, 65, "years"),
     }
     
     for key, (low, high, unit) in reference_ranges.items():
@@ -674,7 +787,6 @@ async def predict_ckd(payload: PredictionRequest):
     
     try:
         p = payload.data.copy()
-        logger.info(f"📝 Patient data keys: {list(p.keys())[:5]}...")
         
         # Feature engineering
         if "LBXSAL" in p and p["LBXSAL"] > 0:
@@ -694,7 +806,6 @@ async def predict_ckd(payload: PredictionRequest):
             input_values.append(val)
         
         input_array = np.array([input_values])
-        logger.info(f"📊 Input array shape: {input_array.shape}")
         
         # Get model prediction
         if xgb_model is None:
@@ -704,8 +815,6 @@ async def predict_ckd(payload: PredictionRequest):
         probabilities = xgb_model.predict_proba(input_array)[0]
         prob_ckd = float(probabilities[1])
         logger.info(f"🎯 Prediction: {prob_ckd:.4f} (CKD probability)")
-        logger.info(f"   - Class 0: {probabilities[0]:.4f}")
-        logger.info(f"   - Class 1: {probabilities[1]:.4f}")
         
         # Get SHAP explanations
         shap_explanations = get_real_shap_explanations(input_array, FEATURE_COLS, p)
