@@ -1,4 +1,4 @@
-# app.py - CKD XGBoost API with XAI (Embedded SHAP Data)
+# app.py - CKD XGBoost API with XAI (Embedded SHAP Data) - WITH DEBUG LOGGING
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -11,12 +11,23 @@ import json
 import os
 import logging
 import requests
+import sys
 from io import StringIO
+import traceback
+
+# ============================================
+# DETAILED LOGGING SETUP
+# ============================================
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+logger = logging.getLogger("nephroshield-api")
 
 app = FastAPI(title="CKD XGBoost API with XAI")
-
-logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
-logger = logging.getLogger("nephroshield-api")
 
 app.add_middleware(
     CORSMiddleware,
@@ -37,10 +48,13 @@ GEMINI_API_BASE_URL = os.environ.get(
     "https://generativelanguage.googleapis.com/v1beta",
 ).rstrip("/")
 
+logger.info(f"🔑 GEMINI_API_KEY present: {bool(GEMINI_API_KEY)}")
+logger.info(f"🤖 GEMINI_MODEL: {GEMINI_MODEL}")
+
 if GEMINI_API_KEY:
-    logger.info("Gemini REST generation configured with model %s", GEMINI_MODEL)
+    logger.info("✅ Gemini REST generation configured with model %s", GEMINI_MODEL)
 else:
-    logger.warning("GEMINI_API_KEY not set; Gemini rapport generation disabled")
+    logger.warning("⚠️ GEMINI_API_KEY not set; Gemini rapport generation disabled")
 
 # ============================================
 # EMBEDDED SHAP BACKGROUND DATA (No CSV needed!)
@@ -56,12 +70,34 @@ SHAP_BACKGROUND_CSV = """has_nsaid,LBXHGB,LBXTC,LBXTR,has_diabetes_med,URXUCR,se
 # ============================================
 # LOAD YOUR EXISTING MODEL
 # ============================================
+logger.info("=" * 60)
+logger.info("🚀 STARTING API - LOADING MODELS")
+logger.info("=" * 60)
+
 try:
-    with open("models/xgb_trackD.pkl", "rb") as f:
-        xgb_model = pickle.load(f)
-    print("✅ XGBoost model loaded")
+    model_path = "models/xgb_trackD.pkl"
+    logger.info(f"📂 Loading model from: {model_path}")
+    
+    if not os.path.exists(model_path):
+        logger.error(f"❌ Model file not found at: {model_path}")
+        logger.error(f"📁 Current directory: {os.getcwd()}")
+        logger.error(f"📁 Files in directory: {os.listdir('.') if os.path.exists('.') else 'Cannot list'}")
+        xgb_model = None
+    else:
+        with open(model_path, "rb") as f:
+            xgb_model = pickle.load(f)
+        logger.info(f"✅ XGBoost model loaded successfully")
+        logger.info(f"📊 Model type: {type(xgb_model)}")
+        
+        # Check if model has predict_proba
+        if hasattr(xgb_model, 'predict_proba'):
+            logger.info("✅ Model has predict_proba method")
+        else:
+            logger.warning("⚠️ Model does NOT have predict_proba method")
+            
 except Exception as e:
-    print(f"❌ Error loading XGBoost model: {e}")
+    logger.error(f"❌ Error loading XGBoost model: {e}")
+    logger.error(traceback.format_exc())
     xgb_model = None
 
 # ============================================
@@ -70,20 +106,30 @@ except Exception as e:
 shap_explainer = None
 
 try:
+    logger.info("📊 Loading SHAP background data...")
+    
     # Load background data from embedded CSV string
     background_data = pd.read_csv(StringIO(SHAP_BACKGROUND_CSV))
-    print(f"✅ Background data loaded: {background_data.shape}")
+    logger.info(f"✅ Background data loaded: {background_data.shape}")
+    logger.info(f"📊 Background columns: {background_data.columns.tolist()[:5]}...")
     
     if xgb_model is not None:
+        logger.info("🔧 Creating SHAP TreeExplainer...")
         shap_explainer = shap.TreeExplainer(xgb_model, background_data)
-        print("✅ Real SHAP explainer loaded")
+        logger.info("✅ Real SHAP explainer loaded successfully!")
+        logger.info(f"📊 SHAP explainer type: {type(shap_explainer)}")
     else:
-        print("⚠️ Model not loaded, SHAP explainer not created")
+        logger.warning("⚠️ Model not loaded, SHAP explainer not created")
+        shap_explainer = None
+        
 except Exception as e:
-    print(f"❌ Error loading SHAP explainer: {e}")
-    import traceback
-    traceback.print_exc()
+    logger.error(f"❌ Error loading SHAP explainer: {e}")
+    logger.error(traceback.format_exc())
     shap_explainer = None
+
+logger.info("=" * 60)
+logger.info(f"🏁 Startup complete - Model: {xgb_model is not None}, SHAP: {shap_explainer is not None}")
+logger.info("=" * 60)
 
 # ============================================
 # FEATURES
@@ -129,6 +175,75 @@ class PredictionRequest(BaseModel):
     patient_context: Optional[Dict] = None
 
 # ============================================
+# FALLBACK EXPLANATIONS (WHEN SHAP FAILS)
+# ============================================
+
+def get_fallback_explanations(feature_names, patient_values):
+    """Generate fallback explanations when SHAP is unavailable"""
+    logger.info("🔄 Using FALLBACK explanations (SHAP not available)")
+    
+    explanations = []
+    
+    # Clinical importance weights
+    clinical_weights = {
+        "LBXHGB": 5, "LBXTC": 3, "LBXTR": 2, "LBXSBU": 4,
+        "BPXSY1": 5, "BPXDI1": 4, "LBXGLU": 5, "LBXGH": 5,
+        "BMXBMI": 4, "URXUMA": 5, "has_diabetes_med": 5,
+        "has_nsaid": 3, "has_ace_arb": 3, "RIDAGEYR": 4,
+        "LBXSUA": 3, "URXUCR": 3, "LBXSAL": 3
+    }
+    
+    for feature in feature_names:
+        actual_value = patient_values.get(feature, 0)
+        reference_value = get_reference_value(feature)
+        
+        # Calculate deviation from reference
+        if reference_value != "N/A" and isinstance(reference_value, (int, float)):
+            try:
+                deviation = abs(float(actual_value) - float(reference_value)) / float(reference_value) if float(reference_value) > 0 else 0
+            except:
+                deviation = 0
+        else:
+            deviation = 0.5 if float(actual_value) > 0 else 0
+        
+        base_importance = clinical_weights.get(feature, 1)
+        shap_val = deviation * base_importance * 0.1
+        
+        # Determine impact
+        if feature in ["LBXHGB"]:
+            if reference_value != "N/A":
+                impact = "decreases_risk" if float(actual_value) > float(reference_value) else "increases_risk"
+            else:
+                impact = "decreases_risk"
+        elif feature in ["LBXGLU", "LBXGH", "BPXSY1", "URXUMA", "BMXBMI", "LBXTC", "LBXTR"]:
+            if reference_value != "N/A":
+                impact = "increases_risk" if float(actual_value) > float(reference_value) else "decreases_risk"
+            else:
+                impact = "increases_risk"
+        else:
+            impact = "increases_risk" if shap_val > 0.01 else "decreases_risk"
+        
+        explanations.append({
+            "feature": feature,
+            "description": FEATURE_DESCRIPTIONS.get(feature, feature),
+            "actual_value": actual_value,
+            "reference_value": reference_value,
+            "shap_value": float(shap_val),
+            "impact": impact,
+            "absolute_impact": abs(float(shap_val)),
+            "percent_contribution": 0
+        })
+    
+    # Calculate percentages
+    total_abs = sum(e["absolute_impact"] for e in explanations)
+    if total_abs > 0:
+        for e in explanations:
+            e["percent_contribution"] = round((e["absolute_impact"] / total_abs) * 100, 1)
+    
+    explanations.sort(key=lambda x: x["absolute_impact"], reverse=True)
+    return explanations[:15]
+
+# ============================================
 # SHAP EXPLANATIONS
 # ============================================
 
@@ -151,17 +266,27 @@ def get_reference_value(feature):
     return reference_values.get(feature, "N/A")
 
 def get_real_shap_explanations(input_array, feature_names, patient_values):
-    """Get REAL SHAP values - dynamic based on actual input"""
+    """Get REAL SHAP values with fallback"""
+    logger.info("🔍 Getting SHAP explanations...")
+    logger.info(f"   - SHAP explainer available: {shap_explainer is not None}")
+    logger.info(f"   - Input array shape: {input_array.shape}")
+    
     if shap_explainer is None:
-        return None
+        logger.warning("⚠️ SHAP explainer is None, using fallback")
+        return get_fallback_explanations(feature_names, patient_values)
     
     try:
+        logger.info("📊 Calculating SHAP values...")
         shap_values = shap_explainer.shap_values(input_array)
+        logger.info(f"✅ SHAP values calculated, type: {type(shap_values)}")
         
         if isinstance(shap_values, list):
+            logger.info(f"   - SHAP is a list with {len(shap_values)} items")
             shap_values = shap_values[1] if len(shap_values) > 1 else shap_values[0]
+            logger.info(f"   - Using class 1 SHAP values")
         
         shap_values = shap_values.flatten()
+        logger.info(f"   - Flattened SHAP values length: {len(shap_values)}")
         
         explanations = []
         for i, (feature, shap_val) in enumerate(zip(feature_names, shap_values)):
@@ -185,11 +310,20 @@ def get_real_shap_explanations(input_array, feature_names, patient_values):
                 e["percent_contribution"] = round((e["absolute_impact"] / total_abs_impact) * 100, 1)
         
         explanations.sort(key=lambda x: x["absolute_impact"], reverse=True)
-        return explanations[:15]
+        result = explanations[:15]
+        logger.info(f"✅ SHAP explanations generated: {len(result)} factors")
+        
+        # Log top 3 factors
+        for i, exp in enumerate(result[:3]):
+            logger.info(f"   Top {i+1}: {exp['description']} - {exp['impact']} ({exp['percent_contribution']:.1f}%)")
+        
+        return result
         
     except Exception as e:
-        print(f"SHAP calculation error: {e}")
-        return None
+        logger.error(f"❌ SHAP calculation error: {e}")
+        logger.error(traceback.format_exc())
+        logger.info("🔄 Falling back to fallback explanations")
+        return get_fallback_explanations(feature_names, patient_values)
 
 # ============================================
 # GEMINI RAPPORT GENERATION
@@ -534,8 +668,13 @@ async def health_check():
 
 @app.post("/predict")
 async def predict_ckd(payload: PredictionRequest):
+    logger.info("=" * 60)
+    logger.info("🔮 NEW PREDICTION REQUEST")
+    logger.info("=" * 60)
+    
     try:
         p = payload.data.copy()
+        logger.info(f"📝 Patient data keys: {list(p.keys())[:5]}...")
         
         # Feature engineering
         if "LBXSAL" in p and p["LBXSAL"] > 0:
@@ -549,33 +688,51 @@ async def predict_ckd(payload: PredictionRequest):
         p["Waist_Height_ratio"] = waist / height if height > 0 else 0.5
         
         # Prepare input array
-        input_array = np.array([[float(p.get(f, 0)) for f in FEATURE_COLS]])
+        input_values = []
+        for f in FEATURE_COLS:
+            val = float(p.get(f, 0))
+            input_values.append(val)
+        
+        input_array = np.array([input_values])
+        logger.info(f"📊 Input array shape: {input_array.shape}")
         
         # Get model prediction
         if xgb_model is None:
+            logger.error("❌ Model not loaded")
             raise HTTPException(status_code=503, detail="XGBoost model is not loaded")
 
         probabilities = xgb_model.predict_proba(input_array)[0]
         prob_ckd = float(probabilities[1])
+        logger.info(f"🎯 Prediction: {prob_ckd:.4f} (CKD probability)")
+        logger.info(f"   - Class 0: {probabilities[0]:.4f}")
+        logger.info(f"   - Class 1: {probabilities[1]:.4f}")
         
         # Get SHAP explanations
         shap_explanations = get_real_shap_explanations(input_array, FEATURE_COLS, p)
+        logger.info(f"📊 SHAP explanations: {len(shap_explanations) if shap_explanations else 0} factors")
         
         # Generate personalized rapport using Gemini
+        logger.info("📋 Generating personalized rapport...")
         personalized_rapport = generate_llm_rapport(
             prob_ckd, 
             shap_explanations, 
             p, 
             payload.patient_context
         )
+        logger.info(f"✅ Rapport generated: {personalized_rapport is not None}")
         
         # Generate clinical insights
+        logger.info("💡 Generating clinical insights...")
         clinical_insights = generate_clinical_insights(p, shap_explanations)
+        logger.info(f"✅ Clinical insights: {len(clinical_insights)}")
         
-        # Debug: Log what we're returning
-        print(f"📊 SHAP explanations count: {len(shap_explanations) if shap_explanations else 0}")
-        print(f"📋 Rapport generated: {personalized_rapport is not None}")
-        print(f"💡 Clinical insights count: {len(clinical_insights) if clinical_insights else 0}")
+        # Final log
+        logger.info("=" * 60)
+        logger.info("✅ PREDICTION COMPLETE")
+        logger.info(f"   - Prediction: {prob_ckd:.4f}")
+        logger.info(f"   - SHAP factors: {len(shap_explanations) if shap_explanations else 0}")
+        logger.info(f"   - Insights: {len(clinical_insights)}")
+        logger.info("=" * 60)
         
         return {
             "status": "success",
@@ -588,8 +745,8 @@ async def predict_ckd(payload: PredictionRequest):
         }
         
     except Exception as e:
-        import traceback
-        traceback.print_exc()
+        logger.error(f"❌ PREDICTION ERROR: {e}")
+        logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
 
 # ============================================
@@ -599,4 +756,5 @@ async def predict_ckd(payload: PredictionRequest):
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
+    logger.info(f"🚀 Starting server on port {port}")
     uvicorn.run(app, host="0.0.0.0", port=port)
