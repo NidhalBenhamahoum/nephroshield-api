@@ -1,4 +1,4 @@
-# app.py - CKD XGBoost API with XAI (Doctor-Focused)
+# app.py - CKD XGBoost API with XAI (Doctor Consult Note)
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -340,7 +340,7 @@ def get_real_shap_explanations(input_array, feature_names, patient_values):
         return get_fallback_explanations(feature_names, patient_values)
 
 # ============================================
-# GEMINI RAPPORT GENERATION (DOCTOR-FOCUSED)
+# GEMINI RAPPORT GENERATION (DOCTOR CONSULT NOTE)
 # ============================================
 
 def generate_abnormal_labs_summary(patient_data):
@@ -370,58 +370,81 @@ def generate_abnormal_labs_summary(patient_data):
     return "\n".join(abnormal) if abnormal else "All key markers within normal ranges."
 
 def generate_template_rapport(risk_score, top_risk_factors, top_protective_factors, patient_context):
-    """Dynamic template-based rapport (fallback when Gemini is unavailable)"""
+    """Template rapport - Written TO the doctor ABOUT the patient"""
     
-    name = patient_context.get('name', 'Patient') if patient_context else 'Patient'
+    patient_name = patient_context.get('name', 'Patient') if patient_context else 'Patient'
+    patient_age = patient_context.get('age', 'Unknown') if patient_context else 'Unknown'
+    patient_gender = patient_context.get('gender', 'Unknown') if patient_context else 'Unknown'
     
     if risk_score >= 70:
-        primary = f"Patient {name} presents with {risk_score:.0f}% CKD risk. High risk category. Recommend immediate nephrology consultation."
-        clinical = "Clinical findings indicate significant risk factors. Consider renal protective medications and strict blood pressure control."
+        assessment = f"This patient ({patient_name}, {patient_age}y, {patient_gender}) presents with HIGH risk ({risk_score:.0f}%) for CKD development. Immediate nephrology consultation is recommended."
+        clinical = "Clinical findings indicate significant modifiable risk factors. Recommend initiating renal protective therapy and optimizing blood pressure control."
+        urgency = "URGENT: Refer within 1-2 weeks"
     elif risk_score >= 40:
-        primary = f"Patient {name} presents with {risk_score:.0f}% CKD risk. Moderate risk category."
-        clinical = "Recommend monitoring kidney function every 3 months. Optimize blood pressure and glucose control. Consider dietary modifications."
+        assessment = f"This patient ({patient_name}, {patient_age}y, {patient_gender}) presents with MODERATE risk ({risk_score:.0f}%) for CKD development."
+        clinical = "Recommend close monitoring and early intervention to prevent progression."
+        urgency = "Follow-up within 1-3 months"
     else:
-        primary = f"Patient {name} presents with {risk_score:.0f}% CKD risk. Low risk category."
-        clinical = "Continue regular annual monitoring. Maintain current management plan."
+        assessment = f"This patient ({patient_name}, {patient_age}y, {patient_gender}) presents with LOW risk ({risk_score:.0f}%) for CKD development."
+        clinical = "Continue standard monitoring. No immediate intervention required."
+        urgency = "Annual follow-up"
     
     risk_section = ""
     if top_risk_factors:
-        risk_section = "\nPrimary Risk Factors:\n"
+        risk_section = "\nIdentified Risk Factors (by contribution):\n"
         for factor in top_risk_factors[:3]:
-            risk_section += f"- {factor['factor']}: {factor['value']} (contributes {factor['impact_percent']:.0f}% to risk)\n"
+            risk_section += f"- {factor['factor']}: {factor['value']} ({factor['impact_percent']:.0f}% contribution to risk)\n"
+    else:
+        risk_section = "\nNo significant risk factors identified.\n"
     
     recommendations = []
     if any(f['factor'] == 'Blood pressure' for f in top_risk_factors):
-        recommendations.append("- Target BP < 130/80 mmHg. Consider ACE inhibitors or ARBs.")
+        recommendations.append("- Consider initiating ACE inhibitor or ARB therapy. Target BP < 130/80 mmHg.")
     if any(f['factor'] == 'HbA1c' for f in top_risk_factors):
-        recommendations.append("- Optimize glycemic control. Target HbA1c < 7%.")
+        recommendations.append("- Optimize glycemic control. Target HbA1c < 7%. Consider medication adjustment.")
     if any(f['factor'] == 'BMI' for f in top_risk_factors):
-        recommendations.append("- Weight management: Target 5-10% reduction.")
+        recommendations.append("- Refer to dietitian. Target 5-10% weight reduction.")
     if any(f['factor'] == 'Hemoglobin' for f in top_risk_factors):
-        recommendations.append("- Evaluate for anemia. Consider iron studies.")
+        recommendations.append("- Evaluate for anemia. Check iron studies, B12, folate.")
     
     if not recommendations:
         recommendations = [
-            "- Continue annual kidney function monitoring",
-            "- Maintain adequate hydration",
-            "- Monitor blood pressure and glucose",
-            "- Review medications that may affect renal function"
+            "- Continue annual renal function monitoring",
+            "- Maintain adequate hydration and avoid nephrotoxins",
+            "- Monitor blood pressure and glucose at each visit"
         ]
     
-    recs_text = "\n\nRecommended Clinical Actions:\n" + "\n".join(recommendations[:4])
-    full_text = primary + risk_section + recs_text + f"\n\n{clinical}"
+    recs_text = "\n\nClinical Recommendations:\n" + "\n".join(recommendations[:4])
+    
+    full_text = f"""CLINICAL CONSULT NOTE
+
+Patient: {patient_name} ({patient_age}y, {patient_gender})
+Risk Score: {risk_score:.0f}%
+Risk Category: {'HIGH' if risk_score >= 70 else 'MODERATE' if risk_score >= 40 else 'LOW'}
+Urgency: {urgency}
+
+ASSESSMENT:
+{assessment}
+
+{risk_section}
+{recs_text}
+
+CLINICAL IMPRESSION:
+{clinical}
+
+Suggested Follow-up: {urgency}"""
     
     return {
         "risk_category": "high" if risk_score >= 70 else "moderate" if risk_score >= 40 else "low",
-        "urgency": "Immediate nephrology referral (within 1-2 weeks)" if risk_score >= 70 else "Follow-up in 1-3 months" if risk_score >= 40 else "Annual follow-up",
-        "tone": "clinical",
+        "urgency": urgency,
+        "tone": "clinical_consult",
         "full_rapport_text": full_text,
         "recommendations": recommendations[:5],
         "questions_for_doctor": [
-            "Consider renal ultrasound if clinically indicated",
-            "Review medication list for nephrotoxic agents",
-            "Check urine albumin-to-creatinine ratio",
-            "Consider dietary consultation"
+            "Consider renal ultrasound to assess structure",
+            "Review current medications for nephrotoxicity",
+            "Check urine albumin-to-creatinine ratio if not done",
+            "Consider dietary consultation for renal diet"
         ],
         "llm_generated": False,
         "llm_provider": "template",
@@ -432,16 +455,16 @@ def extract_structured_from_llm(llm_text, risk_score, top_factors, provider="gem
     """Extract structured data from LLM response"""
     if risk_score >= 70:
         risk_category = "high"
-        urgency = "Immediate nephrology referral recommended (1-2 weeks)"
-        tone = "clinical_concerned"
+        urgency = "Immediate nephrology referral (1-2 weeks)"
+        tone = "clinical_consult_urgent"
     elif risk_score >= 40:
         risk_category = "moderate"
-        urgency = "Schedule follow-up within 1-3 months"
-        tone = "clinical_proactive"
+        urgency = "Follow-up in 1-3 months"
+        tone = "clinical_consult"
     else:
         risk_category = "low"
-        urgency = "Continue annual monitoring"
-        tone = "clinical_reassuring"
+        urgency = "Annual follow-up"
+        tone = "clinical_consult_routine"
     
     recommendations = []
     lines = llm_text.split('\n')
@@ -473,7 +496,7 @@ def extract_structured_from_llm(llm_text, risk_score, top_factors, provider="gem
     }
 
 def generate_llm_rapport(probability, shap_explanations, patient_data, patient_context):
-    """Generate personalized clinical rapport using Gemini - DOCTOR FOCUSED"""
+    """Generate clinical consult note - Written TO the doctor ABOUT the patient"""
     
     risk_score = probability * 100
     
@@ -496,36 +519,47 @@ def generate_llm_rapport(probability, shap_explanations, patient_data, patient_c
                     "impact_percent": exp["percent_contribution"]
                 })
     
-    # Build prompt for LLM - DOCTOR FOCUSED
-    system_prompt = """You are a clinical nephrologist. Generate a concise, professional clinical report for a physician about a patient's CKD risk assessment.
-    Use clinical terminology. Be direct and evidence-based. Focus on actionable clinical insights.
-    Keep it concise (max 250 words). Use plain text without markdown or emojis.
-    Structure: Assessment, Key Risk Factors, Clinical Recommendations, Follow-up Plan."""
+    # Build prompt for LLM - DOCTOR CONSULT NOTE
+    system_prompt = """You are a clinical nephrologist writing a consult note for a referring physician.
+    Write in a professional, clinical style speaking TO the doctor ABOUT the patient.
+    Use third person (e.g., "this patient presents with", "the patient's lab values show").
+    Be direct, evidence-based, and actionable.
+    Keep it concise (max 300 words). No markdown, no emojis.
+    
+    Structure:
+    1. Patient Demographics & Risk Summary
+    2. Clinical Assessment (what the data shows)
+    3. Risk Factors (based on SHAP analysis)
+    4. Recommendations (specific actions for the doctor)
+    5. Follow-up Plan"""
+    
+    patient_name = patient_context.get('name', 'this patient') if patient_context else 'this patient'
+    patient_age = patient_context.get('age', 'Unknown') if patient_context else 'Unknown'
+    patient_gender = patient_context.get('gender', 'Unknown') if patient_context else 'Unknown'
     
     user_prompt = f"""
-    PATIENT: {patient_context.get('name', 'Patient') if patient_context else 'Patient'}
-    AGE: {patient_context.get('age', 'Unknown') if patient_context else 'Unknown'}
-    GENDER: {patient_context.get('gender', 'Unknown') if patient_context else 'Unknown'}
+    Write a clinical consult note for a physician about their patient:
     
-    CKD RISK SCORE: {risk_score:.1f}% ({'HIGH' if risk_score >= 70 else 'MODERATE' if risk_score >= 40 else 'LOW'})
+    Patient: {patient_name}, {patient_age}y, {patient_gender}
+    CKD Risk Score: {risk_score:.1f}% ({'HIGH' if risk_score >= 70 else 'MODERATE' if risk_score >= 40 else 'LOW'})
     
-    KEY RISK FACTORS:
+    Key Risk Factors (from SHAP analysis):
     {json.dumps(top_risk_factors, indent=2) if top_risk_factors else 'None significant'}
     
-    PROTECTIVE FACTORS:
+    Protective Factors:
     {json.dumps(top_protective_factors, indent=2) if top_protective_factors else 'None identified'}
     
-    ABNORMAL LABS:
+    Abnormal Lab Values:
     {generate_abnormal_labs_summary(patient_data)}
     
-    Generate a clinical report with:
-    1. Clinical Assessment (risk level, key findings)
-    2. Primary Risk Factors (top contributors)
-    3. Clinical Recommendations (specific, actionable)
-    4. Suggested Follow-up Plan
+    Write a clinical consult note that:
+    1. Addresses the physician directly (like a consult letter)
+    2. Uses third person when referring to the patient
+    3. Provides specific clinical recommendations
+    4. Suggests follow-up timeline
+    5. Is professional, concise, and evidence-based
     
-    Use professional medical terminology. Be concise and evidence-based.
-    No markdown, no emojis, no patient-facing language.
+    Format as a clinical consult note. No markdown, no emojis.
     """
     
     # Call Gemini API
@@ -542,7 +576,7 @@ def generate_llm_rapport(probability, shap_explanations, patient_data, patient_c
                 ],
                 "generationConfig": {
                     "temperature": 0.3,
-                    "maxOutputTokens": 600,
+                    "maxOutputTokens": 700,
                     "topP": 0.9,
                 },
             }
@@ -705,7 +739,7 @@ async def predict_ckd(payload: PredictionRequest):
         # Get SHAP explanations (with fallback)
         shap_explanations = get_real_shap_explanations(input_array, FEATURE_COLS, p)
         
-        # Generate personalized rapport using Gemini
+        # Generate clinical consult note (TO the doctor ABOUT the patient)
         personalized_rapport = generate_llm_rapport(
             prob_ckd, 
             shap_explanations, 
