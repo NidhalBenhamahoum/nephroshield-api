@@ -232,7 +232,7 @@ def get_normal_range(feature):
 # ============================================
 
 def get_fallback_explanations(feature_names, patient_values):
-    """Generate fallback explanations when SHAP is unavailable"""
+    """Generate fallback explanations when SHAP is unavailable - excludes sex_male"""
     explanations = []
     
     clinical_weights = {
@@ -244,6 +244,10 @@ def get_fallback_explanations(feature_names, patient_values):
     }
     
     for feature in feature_names:
+        # 🆕 SKIP sex_male
+        if feature == "sex_male":
+            continue
+            
         actual_value = patient_values.get(feature, 0)
         reference_value = get_reference_value(feature)
         normal_range = get_normal_range(feature)
@@ -291,13 +295,12 @@ def get_fallback_explanations(feature_names, patient_values):
     
     explanations.sort(key=lambda x: x["absolute_impact"], reverse=True)
     return explanations[:15]
-
 # ============================================
 # SHAP EXPLANATIONS (WITH FALLBACK)
 # ============================================
 
 def get_real_shap_explanations(input_array, feature_names, patient_values):
-    """Get REAL SHAP values with fallback"""
+    """Get REAL SHAP values with fallback - excludes sex_male"""
     if shap_explainer is None:
         return get_fallback_explanations(feature_names, patient_values)
     
@@ -311,6 +314,10 @@ def get_real_shap_explanations(input_array, feature_names, patient_values):
         
         explanations = []
         for i, (feature, shap_val) in enumerate(zip(feature_names, shap_values)):
+            # 🆕 SKIP sex_male entirely
+            if feature == "sex_male":
+                continue
+                
             actual_value = patient_values.get(feature, "N/A")
             reference_value = get_reference_value(feature)
             normal_range = get_normal_range(feature)
